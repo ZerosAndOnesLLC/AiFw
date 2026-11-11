@@ -1,0 +1,280 @@
+#!/bin/sh
+# /usr/local/libexec/aifw-sudo-carp <verb> [args...]
+#
+# Narrow-grant control of the CARP / pfsync kernel state for AiFw HA (#712).
+# The aifw user runs this via sudo; rc.d scripts run it directly as root.
+#
+# CARP demotion. `net.inet.carp.demotion` is an ADJUSTMENT: writing N adds N
+# to the kernel counter (carp(4)), it does not set it. Writing 0 is a no-op
+# and writing 240 twice demotes twice. This helper is the only writer, and
+# it keeps a ledger with one file per reason under $LEDGER: `demote R` adds
+# 240 only if R isn't already held, `undemote R` subtracts 240 only if it
+# is. The ledger lives in /var/run, which is cleared at boot, the same as
+# the kernel counter.
+#
+#   demote <reason>         hold a demotion for <reason> (idempotent)
+#   undemote <reason>       release it (idempotent)
+#   reasons                 list held reasons, one per line
+#   preempt                 sysctl net.inet.carp.preempt=1
+#   maintenance on|off      persistent maintenance hold (survives reboot)
+#   boot                    early-boot: reset ledger, preempt=1, hold `boot`,
+#                           re-apply persistent maintenance; once per boot
+#                           (re-runs are no-ops). Schedules a failsafe that
+#                           releases `boot` after $BOOT_FAILSAFE_SECS in
+#                           case aifw-daemon never does.
+#   vip-set <if> <vhid> <advskew> <advbase> <inet|inet6> <addr/prefix>
+#                           configure a CARP vhid + address; password on
+#                           stdin (it does appear in ifconfig's own argv for
+#                           the instant ifconfig runs — inherent to ifconfig)
+#   vip-del <if> <inet|inet6> <addr>
+#   pfsync-set <syncdev> <peer|-> <defer|nodefer>
+#   pfsync-down
+#
+# Reasons are a closed set. Keep in sync with aifw_core::carp::DemoteReason.
+
+set -eu
+
+LEDGER="/var/run/aifw-carp"
+MAINT_FLAG="/var/db/aifw/carp-maintenance"
+STEP=240
+BOOT_MARK="$LEDGER/.booted"
+BOOT_FAILSAFE_SECS=300
+
+fail() {
+    echo "aifw-sudo-carp: $1" >&2
+    exit 1
+}
+
+[ $# -ge 1 ] || { echo "usage: $0 <verb> [args...]" >&2; exit 2; }
+
+# Serialise ledger updates so two concurrent callers can't both see a reason
+# as unheld and both add 240. sudo resets the environment, so a caller can't
+# pre-set the marker to skip the lock.
+if [ -z "${AIFW_CARP_LOCKED:-}" ]; then
+    AIFW_CARP_LOCKED=1
+    export AIFW_CARP_LOCKED
+    exec /usr/bin/lockf -k -t 15 /var/run/aifw-carp.lock "$0" "$@"
+fi
+
+valid_reason() {
+    case "$1" in
+        boot|shutdown|health|manual|maintenance) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+valid_iface() {
+    case "$1" in
+        ""|-*|*[!A-Za-z0-9_.]*) return 1 ;;
+    esac
+    [ "${#1}" -le 15 ]
+}
+
+valid_uint_range() { # $1 value, $2 min, $3 max
+    case "$1" in
+        ""|*[!0-9]*) return 1 ;;
+    esac
+    [ "${#1}" -le 3 ] && [ "$1" -ge "$2" ] && [ "$1" -le "$3" ]
+}
+
+valid_addr() { # bare address, v4 or v6
+    case "$1" in
+        ""|-*|*[!0-9A-Fa-f:.]*) return 1 ;;
+    esac
+    [ "${#1}" -le 45 ]
+}
+
+valid_cidr() {
+    _a="${1%/*}"
+    _p="${1#*/}"
+    [ "$_a" != "$1" ] || return 1
+    valid_addr "$_a" && valid_uint_range "$_p" 0 128
+}
+
+valid_af() {
+    case "$1" in inet|inet6) return 0 ;; *) return 1 ;; esac
+}
+
+pfsync_loaded() {
+    /sbin/kldstat -q -m pfsync 2>/dev/null || /sbin/kldload -n pfsync 2>/dev/null
+    /sbin/kldstat -q -m pfsync 2>/dev/null
+}
+
+# grep -E pattern for an address line: dots escaped so 10.0.0.1 can't match
+# 10.0.0.10's prefix or 10x0x0x1.
+addr_re() {
+    printf '%s' "$1" | sed 's/[.]/\\./g'
+}
+
+carp_loaded() {
+    /sbin/kldstat -q -m carp 2>/dev/null || /sbin/kldload -n carp 2>/dev/null
+    /sbin/sysctl -n net.inet.carp.demotion >/dev/null 2>&1
+}
+
+adjust() { # signed adjustment
+    carp_loaded || fail "carp(4) is not available"
+    /sbin/sysctl "net.inet.carp.demotion=$1" >/dev/null
+}
+
+# The kernel adjustment and the ledger write must not be split by a signal:
+# that would leave 240 applied but unrecorded (or the reverse). SIGKILL and
+# power loss remain — the latter also resets the kernel counter.
+demote() {
+    valid_reason "$1" || fail "unknown demotion reason: $1"
+    mkdir -p "$LEDGER"
+    chmod 755 "$LEDGER"
+    [ -e "$LEDGER/$1" ] && return 0
+    trap '' HUP INT TERM
+    adjust "$STEP"
+    : > "$LEDGER/$1"
+    chmod 644 "$LEDGER/$1"
+    trap - HUP INT TERM
+}
+
+undemote() {
+    valid_reason "$1" || fail "unknown demotion reason: $1"
+    [ -e "$LEDGER/$1" ] || return 0
+    trap '' HUP INT TERM
+    adjust "-$STEP"
+    rm -f "$LEDGER/$1"
+    trap - HUP INT TERM
+}
+
+VERB="$1"
+shift
+
+case "$VERB" in
+    demote)
+        [ $# -eq 1 ] || fail "demote takes one reason"
+        demote "$1"
+        ;;
+    undemote)
+        [ $# -eq 1 ] || fail "undemote takes one reason"
+        undemote "$1"
+        ;;
+    reasons)
+        [ $# -eq 0 ] || fail "reasons takes no arguments"
+        if [ -d "$LEDGER" ]; then
+            ls -1 "$LEDGER"
+        fi
+        ;;
+    preempt)
+        [ $# -eq 0 ] || fail "preempt takes no arguments"
+        carp_loaded || fail "carp(4) is not available"
+        /sbin/sysctl net.inet.carp.preempt=1 >/dev/null
+        ;;
+    maintenance)
+        [ $# -eq 1 ] || fail "maintenance takes on|off"
+        case "$1" in
+            on)
+                mkdir -p "$(dirname "$MAINT_FLAG")"
+                : > "$MAINT_FLAG"
+                demote maintenance
+                ;;
+            off)
+                rm -f "$MAINT_FLAG"
+                undemote maintenance
+                ;;
+            *) fail "maintenance takes on|off" ;;
+        esac
+        ;;
+    boot)
+        [ $# -eq 0 ] || fail "boot takes no arguments"
+        carp_loaded || fail "carp(4) is not available"
+        /sbin/sysctl net.inet.carp.preempt=1 >/dev/null
+        # Once per boot: a second `service aifw_carp_demote start` must not
+        # wipe the ledger and add another 240 the ledger doesn't show.
+        if [ -e "$BOOT_MARK" ]; then
+            exit 0
+        fi
+        # A ledger surviving from before the reboot (cleanvar normally wipes
+        # /var/run) would make undemote subtract what this boot never added.
+        # Only reset it while the kernel counter is still at its boot value.
+        if [ "$(/sbin/sysctl -n net.inet.carp.demotion)" = "0" ]; then
+            rm -rf "$LEDGER"
+        fi
+        mkdir -p "$LEDGER"
+        chmod 755 "$LEDGER"
+        : > "$BOOT_MARK"
+        # Held until aifw-daemon sees pf rules loaded and pfsync's bulk
+        # update complete, so a rebooted node can't preempt with an empty
+        # state table.
+        demote boot
+        if [ -e "$MAINT_FLAG" ]; then
+            demote maintenance
+        fi
+        # Failsafe: if aifw-daemon never releases the hold (disabled,
+        # crashing), don't leave the node unable to win preemption forever.
+        /usr/sbin/daemon -f /bin/sh -c \
+            "sleep $BOOT_FAILSAFE_SECS; /usr/local/libexec/aifw-sudo-carp undemote boot"
+        ;;
+    vip-set)
+        [ $# -eq 6 ] || fail "vip-set <if> <vhid> <advskew> <advbase> <inet|inet6> <addr/prefix>"
+        valid_iface "$1" || fail "invalid interface: $1"
+        valid_uint_range "$2" 1 255 || fail "invalid vhid: $2"
+        valid_uint_range "$3" 0 254 || fail "invalid advskew: $3"
+        valid_uint_range "$4" 1 255 || fail "invalid advbase: $4"
+        valid_af "$5" || fail "invalid address family: $5"
+        valid_cidr "$6" || fail "invalid address: $6"
+        IFS= read -r PASS || true
+        [ -n "$PASS" ] || fail "CARP password required on stdin"
+        case "$PASS" in *[[:space:][:cntrl:]]*) fail "CARP password must not contain whitespace" ;; esac
+        carp_loaded || fail "carp(4) is not available"
+        # Timers and key first: creates the vhid or retunes an existing one
+        # without touching the address.
+        /sbin/ifconfig "$1" vhid "$2" advskew "$3" advbase "$4" pass "$PASS"
+        ADDR="${6%/*}"
+        RE="^[[:space:]]+$5 $(addr_re "$ADDR")[ %]"
+        LINE="$(/sbin/ifconfig "$1" "$5" 2>/dev/null | grep -E "$RE" || true)"
+        if [ -n "$LINE" ] && ! printf '%s\n' "$LINE" | grep -Eq " vhid $2( |\$)"; then
+            # Present but on another vhid (VHID changed) or as a plain
+            # alias: move it onto this vhid. The old vhid goes away with
+            # its last address.
+            /sbin/ifconfig "$1" "$5" "$ADDR" -alias
+            LINE=""
+        fi
+        if [ -z "$LINE" ]; then
+            /sbin/ifconfig "$1" "$5" "$6" vhid "$2" alias
+        fi
+        ;;
+    vip-del)
+        [ $# -eq 3 ] || fail "vip-del <if> <inet|inet6> <addr>"
+        valid_iface "$1" || fail "invalid interface: $1"
+        valid_af "$2" || fail "invalid address family: $2"
+        valid_addr "$3" || fail "invalid address: $3"
+        if /sbin/ifconfig "$1" "$2" 2>/dev/null | grep -Eq "^[[:space:]]+$2 $(addr_re "$3")[ %].* vhid [0-9]+"; then
+            /sbin/ifconfig "$1" "$2" "$3" -alias
+        fi
+        ;;
+    pfsync-set)
+        [ $# -eq 3 ] || fail "pfsync-set <syncdev> <peer|-> <defer|nodefer>"
+        valid_iface "$1" || fail "invalid sync interface: $1"
+        if [ "$2" = "-" ]; then
+            PEER_ARGS="-syncpeer"
+        else
+            valid_addr "$2" || fail "invalid sync peer: $2"
+            PEER_ARGS="syncpeer $2"
+        fi
+        case "$3" in
+            defer) DEFER_ARG="defer" ;;
+            nodefer) DEFER_ARG="-defer" ;;
+            *) fail "pfsync-set takes defer|nodefer" ;;
+        esac
+        # pfsync(4) is a module; ifconfig's autoload looks for if_pfsync,
+        # which doesn't exist, so load it explicitly (UI-built clusters have
+        # no pfsync_enable to do it at boot).
+        pfsync_loaded || fail "pfsync(4) is not available"
+        /sbin/ifconfig pfsync0 >/dev/null 2>&1 || /sbin/ifconfig pfsync0 create
+        # shellcheck disable=SC2086 # PEER_ARGS is one or two validated words
+        /sbin/ifconfig pfsync0 syncdev "$1" $PEER_ARGS "$DEFER_ARG" up
+        ;;
+    pfsync-down)
+        [ $# -eq 0 ] || fail "pfsync-down takes no arguments"
+        if /sbin/ifconfig pfsync0 >/dev/null 2>&1; then
+            /sbin/ifconfig pfsync0 -syncdev down
+        fi
+        ;;
+    *)
+        fail "unsupported verb: $VERB"
+        ;;
+esac

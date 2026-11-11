@@ -447,12 +447,16 @@ rate_limit = 1000
             .await
             .map_err(|e| format!("ha apply_ha_rules: {e}"))?;
 
-        // Apply runtime kernel state too — recover_kernel_state_for_role
-        // owns the carp.preempt sysctl now that apply_ha_rules is pure-pf.
-        cluster_engine
-            .recover_kernel_state_for_role(c.role)
+        // Bring the kernel in line too (pfsync0, CARP vhids, preempt) via
+        // the aifw-sudo-carp helper. A failed step is reported, not fatal:
+        // aifw-daemon reconciles again on every start.
+        let report = cluster_engine
+            .reconcile_kernel_state_for_role(c.role)
             .await
-            .map_err(|e| format!("ha recover_kernel_state_for_role: {e}"))?;
+            .map_err(|e| format!("ha reconcile_kernel_state_for_role: {e}"))?;
+        for e in &report.errors {
+            console::warn(&format!("HA kernel apply: {e}"));
+        }
 
         // Seed minimal default health checks so the HealthProber daemon task
         // has something to probe out of the box.  Failures are warn-only so a

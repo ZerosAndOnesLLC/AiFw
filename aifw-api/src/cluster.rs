@@ -46,11 +46,17 @@ pub fn read_routes() -> Router<AppState> {
         .route("/api/v1/cluster/nodes", get(list_nodes))
         .route("/api/v1/cluster/nodes/{id}", get(get_node))
         .route("/api/v1/cluster/health", get(list_health))
-        .route("/api/v1/cluster/status", get(get_status))
+        .route("/api/v1/cluster/peer-state", get(peer_state))
         .route("/api/v1/cluster/snapshot/hash", get(snapshot_hash))
         .route("/api/v1/cluster/snapshot", get(snapshot_get))
         .route("/api/v1/cluster/failover-history", get(failover_history))
         .route("/api/v1/cluster/health-summary", get(health_summary))
+}
+
+/// Read-only node status, open to any role with `dashboard:view` so the
+/// dashboard banner isn't blank for viewers (#712). Contains no secrets.
+pub fn status_routes() -> Router<AppState> {
+    Router::new().route("/api/v1/cluster/status", get(get_status))
 }
 
 pub fn write_routes() -> Router<AppState> {
@@ -79,6 +85,7 @@ pub fn write_routes() -> Router<AppState> {
         )
         .route("/api/v1/cluster/promote", post(promote))
         .route("/api/v1/cluster/demote", post(demote))
+        .route("/api/v1/cluster/maintenance", put(set_maintenance))
         .route("/api/v1/cluster/snapshot", put(snapshot_put))
         .route("/api/v1/cluster/snapshot/force", post(snapshot_force))
         .route("/api/v1/cluster/cert-push", post(cert_push))
@@ -103,32 +110,141 @@ pub fn write_routes() -> Router<AppState> {
 
 #[derive(Serialize)]
 pub struct StatusResponse {
+    /// Live role: `primary` (every vhid MASTER), `secondary`, `split`,
+    /// `init`, or the configured role when CARP isn't running (`standalone`)
     pub role: String,
+    /// Role this node is configured for (`aifw_cluster_role` / own node row)
+    pub configured_role: String,
+    /// The peer answered the peer monitor recently (authenticated API call,
+    /// not just ICMP); falls back to a ping before the first probe
     pub peer_reachable: bool,
     pub pfsync_state_count: u64,
     pub last_snapshot_hash: Option<String>,
+    /// Kernel CARP / pfsync view
+    pub carp: aifw_core::carp::KernelCarpView,
+    /// Kernel demotion counter and the reasons this node holds
+    pub demotion: DemotionStatus,
+    /// The peer node as last probed
+    pub peer: Option<ClusterNode>,
+    /// This node and the peer both report MASTER
+    pub split_brain: bool,
+    /// Human-readable problems an operator should look at
+    pub warnings: Vec<String>,
 }
 
-async fn get_status(State(state): State<AppState>) -> Result<Json<StatusResponse>, StatusCode> {
-    // Fetch nodes + local role first so we can identify the peer address,
-    // then fan out state-count and ping concurrently.
-    let (role, nodes_result) = tokio::join!(read_local_role(), state.cluster_engine.list_nodes(),);
+#[derive(Serialize)]
+pub struct DemotionStatus {
+    pub level: Option<i64>,
+    pub reasons: Vec<aifw_core::carp::DemoteReason>,
+    pub preempt: Option<bool>,
+    pub maintenance: bool,
+}
 
-    let peer_addr = match &nodes_result {
-        Ok(nodes) => {
-            let local = ClusterRole::parse(&role).unwrap_or(ClusterRole::Standalone);
-            nodes.iter().find(|n| n.role != local).map(|n| n.address)
-        }
-        Err(_) => None,
+/// How long a peer probe stays fresh for `peer_reachable`.
+const PEER_FRESH_SECS: i64 = 30;
+
+async fn get_status(State(state): State<AppState>) -> Result<Json<StatusResponse>, StatusCode> {
+    let (view, configured, nodes, me, peers) = tokio::join!(
+        aifw_core::carp::kernel_view(),
+        state.cluster_engine.configured_role(),
+        state.cluster_engine.list_nodes(),
+        state.cluster_engine.self_node(),
+        state.cluster_engine.peer_nodes(),
+    );
+    let node_count = nodes.map(|n| n.len()).unwrap_or(0);
+    let me_known = matches!(me, Ok(Some(_)));
+    let peer = peers.ok().and_then(|p| p.into_iter().next());
+    let have_peer_key = match &peer {
+        Some(p) => matches!(state.cluster_engine.peer_api_key(p.id).await, Ok(Some(_))),
+        None => false,
     };
 
-    // Fan out: pfsync state count + peer ping run concurrently.
-    let (pfsync_state_count, peer_reachable) = tokio::join!(pfsync_state_count(), async move {
-        match peer_addr {
-            Some(addr) => ping_once(&addr).await,
-            None => false,
+    let (pfsync_state_count, level, preempt, reasons, maintenance) = tokio::join!(
+        pfsync_state_count(),
+        aifw_core::carp::demotion_level(),
+        aifw_core::carp::preempt_enabled(),
+        aifw_core::carp::held_reasons(),
+        aifw_core::carp::maintenance_persisted(),
+    );
+
+    let fresh = peer.as_ref().is_some_and(|p| {
+        p.is_reachable() && (chrono::Utc::now() - p.last_seen).num_seconds() <= PEER_FRESH_SECS
+    });
+    let peer_reachable = match &peer {
+        Some(p) if p.health == aifw_common::NodeHealth::Unknown => ping_once(&p.address).await,
+        Some(_) => fresh,
+        None => false,
+    };
+
+    let aggregate = view.aggregate_state();
+    let role = match aggregate {
+        "master" => "primary".to_string(),
+        "backup" => "secondary".to_string(),
+        "none" => configured.to_string(),
+        other => other.to_string(),
+    };
+    let split_brain = aggregate == "master"
+        && fresh
+        && peer
+            .as_ref()
+            .and_then(|p| p.peer_state.as_deref())
+            .is_some_and(|s| s == "primary");
+
+    let pfsync_cfg = state.cluster_engine.get_pfsync().await.ok().flatten();
+    let has_vips = !view.vhids.is_empty();
+    let mut warnings = Vec::new();
+    if split_brain {
+        warnings.push("Split brain: this node and its peer both report MASTER".to_string());
+    }
+    if has_vips && preempt == Some(false) {
+        warnings.push("CARP preemption is off — demotion will not move the VIPs".to_string());
+    }
+    if aggregate == "split" {
+        warnings.push(
+            "VHIDs disagree: this node is MASTER on some interfaces and BACKUP on others"
+                .to_string(),
+        );
+    }
+    if pfsync_cfg.as_ref().is_some_and(|p| p.enabled) {
+        match view.pfsync.as_ref() {
+            None => warnings.push("pfsync is configured but pfsync0 does not exist".to_string()),
+            Some(k) if !k.up => warnings.push("pfsync0 is down".to_string()),
+            Some(k) if k.syncok == Some(false) => {
+                warnings.push("pfsync bulk update has not completed (syncok 0)".to_string())
+            }
+            _ => {}
         }
-    },);
+    }
+    if peer.is_some() && !peer_reachable {
+        warnings.push("Peer is not answering on its API".to_string());
+    }
+    if let Some(p) = &peer {
+        if !have_peer_key {
+            warnings.push(format!(
+                "No peer key for {} — this node can't push config to it after a failover (Generate Peer Key and register it on {})",
+                p.name, p.name
+            ));
+        } else if p.health == aifw_common::NodeHealth::Degraded {
+            warnings.push(format!(
+                "Peer {} is reachable but refused our peer key",
+                p.name
+            ));
+        }
+    }
+    if node_count > 0 && !me_known {
+        warnings.push(
+            "This node isn't in the cluster node list (no node named after its hostname or \
+             with one of its addresses) — its CARP role and advskew can't be determined; \
+             add it or rename its node entry to the hostname"
+                .to_string(),
+        );
+    }
+    if reasons.contains(&aifw_core::carp::DemoteReason::Boot) {
+        warnings.push(
+            "Boot demotion still held — waiting for pfsync / config sync (released by aifw-daemon, or by the failsafe after 5 minutes)"
+                .to_string(),
+        );
+    }
 
     let last_snapshot_hash = state
         .cluster_engine
@@ -139,10 +255,60 @@ async fn get_status(State(state): State<AppState>) -> Result<Json<StatusResponse
 
     Ok(Json(StatusResponse {
         role,
+        configured_role: configured.to_string(),
         peer_reachable,
         pfsync_state_count,
         last_snapshot_hash,
+        carp: view,
+        demotion: DemotionStatus {
+            level,
+            reasons,
+            preempt,
+            maintenance,
+        },
+        peer,
+        split_brain,
+        warnings,
     }))
+}
+
+/// What a peer's monitor needs from this node (#712): live role, configured
+/// role, demotion and version. Called with the peer key.
+#[derive(Serialize, Deserialize)]
+pub struct PeerState {
+    pub state: String,
+    pub configured_role: String,
+    pub demotion: Option<i64>,
+    pub reasons: Vec<aifw_core::carp::DemoteReason>,
+    pub software_version: String,
+    /// Replicated-config snapshot hash, so a rebooting peer can hold its
+    /// boot demotion until it has this node's config (#712 review).
+    #[serde(default)]
+    pub config_hash: Option<String>,
+}
+
+async fn peer_state(State(s): State<AppState>) -> Json<PeerState> {
+    let view = aifw_core::carp::kernel_view().await;
+    let state = match view.aggregate_state() {
+        "master" => "primary",
+        "backup" => "secondary",
+        other => other,
+    }
+    .to_string();
+    Json(PeerState {
+        state,
+        configured_role: s.cluster_engine.configured_role().await.to_string(),
+        demotion: aifw_core::carp::demotion_level().await,
+        reasons: aifw_core::carp::held_reasons().await,
+        software_version: env!("CARGO_PKG_VERSION").to_string(),
+        config_hash: match s.cluster_snapshot_data().await {
+            Ok((_, h)) => Some(h),
+            Err(e) => {
+                tracing::warn!(error = %e, "peer_state: snapshot hash unavailable");
+                None
+            }
+        },
+    })
 }
 
 /// Parse `pfctl -si` "current entries" for O(1) state count.
@@ -174,38 +340,7 @@ fn parse_pfctl_si_state_count(stdout: &str) -> u64 {
 }
 
 pub(crate) async fn read_local_role() -> String {
-    // Live CARP role from ifconfig (authoritative after failover); fall
-    // back to sysrc only when no CARP iface has reported state yet.
-    let live = tokio::process::Command::new("sh")
-        .arg("-c")
-        .arg("ifconfig 2>/dev/null | awk '/carp:/ {print tolower($2); exit}'")
-        .output()
-        .await
-        .ok();
-    if let Some(o) = live
-        && o.status.success()
-    {
-        let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-        match s.as_str() {
-            "master" => return "primary".into(),
-            "backup" => return "secondary".into(),
-            _ => {} // fall through to sysrc fallback
-        }
-    }
-    tokio::process::Command::new("sysrc")
-        .arg("-n")
-        .arg("aifw_cluster_role")
-        .output()
-        .await
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| "standalone".into())
+    aifw_core::current_local_role().await.to_string()
 }
 
 async fn ping_once(addr: &IpAddr) -> bool {
@@ -273,10 +408,76 @@ struct CarpReq {
     pub password: String,
 }
 
+/// Error shape for HA writes: status + a message the UI can show.
+type HaError = (StatusCode, String);
+
+fn ha_engine_error(e: aifw_common::AifwError) -> HaError {
+    let msg = e.to_string();
+    (crate::routes::engine_error(e), msg)
+}
+
+/// A successful HA write, plus a warning when the DB change was saved but
+/// applying it to pf / the kernel failed (#712 review: returning an error
+/// there made clients believe a saved VIP didn't exist).
+#[derive(Serialize)]
+struct Saved<T: Serialize> {
+    #[serde(flatten)]
+    item: T,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warning: Option<String>,
+}
+
+/// After any HA config write: remove the kernel addresses of VIPs that went
+/// away or moved, reload the `aifw-ha` anchor, push the change into the
+/// kernel (pfsync0, CARP vhids) and keep the rc.conf cluster switches in
+/// step. Never fails — the DB change is already committed; problems come
+/// back as a warning (and the daemon re-reconciles on its next start).
+async fn apply_ha_change(s: &AppState, removed: &[CarpVip]) -> Option<String> {
+    let mut problems = s.cluster_engine.remove_kernel_vips(removed).await;
+    if let Err(e) = s.cluster_engine.apply_ha_rules().await {
+        tracing::error!(error = %e, "cluster: failed to apply HA pf rules");
+        problems.push(format!("loading the HA pf rules failed: {e}"));
+    }
+    if let Err(e) = s.cluster_engine.sync_rc_conf().await {
+        tracing::warn!(error = %e, "cluster: rc.conf sync failed");
+    }
+    match s.cluster_engine.reconcile_kernel_state().await {
+        Ok(report) => problems.extend(report.errors),
+        Err(e) => problems.push(format!("kernel reconcile failed: {e}")),
+    }
+    (!problems.is_empty()).then(|| {
+        format!(
+            "Saved, but applying it to the system failed: {}",
+            problems.join("; ")
+        )
+    })
+}
+
+/// pfsync must have its own link: refuse a VIP on the sync interface.
+async fn check_not_sync_iface(s: &AppState, vip: &CarpVip) -> Result<(), HaError> {
+    if let Some(p) = s
+        .cluster_engine
+        .get_pfsync()
+        .await
+        .map_err(ha_engine_error)?
+        && p.enabled
+        && p.sync_interface == vip.interface
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "{} is the pfsync link; CARP VIPs belong on a LAN/WAN interface",
+                vip.interface
+            ),
+        ));
+    }
+    Ok(())
+}
+
 async fn create_carp(
     State(s): State<AppState>,
     Json(r): Json<CarpReq>,
-) -> Result<Json<CarpVip>, StatusCode> {
+) -> Result<Json<Saved<CarpVip>>, HaError> {
     let vip = CarpVip::new(
         r.vhid,
         r.virtual_ip,
@@ -284,22 +485,27 @@ async fn create_carp(
         Interface(r.interface),
         r.password,
     );
-    let vip = s.cluster_engine.add_carp_vip(vip).await.map_err(|e| {
-        tracing::error!(error = %e, "cluster: failed to add CARP VIP");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-    s.cluster_engine.apply_ha_rules().await.map_err(|e| {
-        tracing::error!(error = %e, "cluster: failed to apply HA rules after adding CARP VIP");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-    Ok(Json(vip))
+    let existing = s
+        .cluster_engine
+        .list_carp_vips()
+        .await
+        .map_err(ha_engine_error)?;
+    check_vip_conflicts(&existing, &vip)?;
+    check_not_sync_iface(&s, &vip).await?;
+    let vip = s
+        .cluster_engine
+        .add_carp_vip(vip)
+        .await
+        .map_err(ha_engine_error)?;
+    let warning = apply_ha_change(&s, &[]).await;
+    Ok(Json(Saved { item: vip, warning }))
 }
 
 async fn update_carp(
     State(s): State<AppState>,
     Path(id): Path<Uuid>,
     Json(r): Json<CarpReq>,
-) -> Result<Json<CarpVip>, StatusCode> {
+) -> Result<Json<Saved<CarpVip>>, HaError> {
     let mut vip = CarpVip::new(
         r.vhid,
         r.virtual_ip,
@@ -308,31 +514,74 @@ async fn update_carp(
         r.password,
     );
     vip.id = id;
+    let existing = s
+        .cluster_engine
+        .list_carp_vips()
+        .await
+        .map_err(ha_engine_error)?;
+    check_vip_conflicts(&existing, &vip)?;
+    check_not_sync_iface(&s, &vip).await?;
     s.cluster_engine
         .update_carp_vip(&vip)
         .await
-        .map_err(|e| match e {
-            aifw_common::AifwError::NotFound(_) => StatusCode::NOT_FOUND,
-            _ => {
-                tracing::warn!(?e, "update_carp_vip failed");
-                StatusCode::INTERNAL_SERVER_ERROR
-            }
-        })?;
-    s.cluster_engine.apply_ha_rules().await.map_err(|e| {
-        tracing::error!(error = %e, "cluster: failed to apply HA rules after updating CARP VIP");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-    Ok(Json(vip))
+        .map_err(ha_engine_error)?;
+    let old: Vec<CarpVip> = existing.into_iter().filter(|v| v.id == id).collect();
+    let removed = aifw_core::ha::vips_to_remove(&old, std::slice::from_ref(&vip));
+    let warning = apply_ha_change(&s, &removed).await;
+    Ok(Json(Saved { item: vip, warning }))
 }
 
-async fn delete_carp(State(s): State<AppState>, Path(id): Path<Uuid>) -> StatusCode {
-    match s.cluster_engine.delete_carp_vip(id).await {
-        Ok(_) => {
-            let _ = s.cluster_engine.apply_ha_rules().await;
-            StatusCode::NO_CONTENT
+/// Reject a VIP that would collide with another one: same VHID on the same
+/// interface (two different keys/addresses fighting over one vhid), or the
+/// same address twice. `vip.id` itself is ignored so updates pass.
+fn check_vip_conflicts(existing: &[CarpVip], vip: &CarpVip) -> Result<(), HaError> {
+    for other in existing.iter().filter(|o| o.id != vip.id) {
+        if other.virtual_ip == vip.virtual_ip {
+            return Err((
+                StatusCode::CONFLICT,
+                format!(
+                    "{} is already a CARP VIP (vhid {})",
+                    vip.virtual_ip, other.vhid
+                ),
+            ));
         }
-        Err(_) => StatusCode::NOT_FOUND,
+        if other.vhid == vip.vhid
+            && other.interface == vip.interface
+            && other.password != vip.password
+        {
+            return Err((
+                StatusCode::CONFLICT,
+                format!(
+                    "vhid {} on {} already uses a different password",
+                    vip.vhid, vip.interface
+                ),
+            ));
+        }
     }
+    Ok(())
+}
+
+async fn delete_carp(
+    State(s): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Saved<serde_json::Value>>, HaError> {
+    let old: Vec<CarpVip> = s
+        .cluster_engine
+        .list_carp_vips()
+        .await
+        .map_err(ha_engine_error)?
+        .into_iter()
+        .filter(|v| v.id == id)
+        .collect();
+    s.cluster_engine
+        .delete_carp_vip(id)
+        .await
+        .map_err(ha_engine_error)?;
+    let warning = apply_ha_change(&s, &old).await;
+    Ok(Json(Saved {
+        item: serde_json::json!({ "deleted": id }),
+        warning,
+    }))
 }
 
 async fn get_pfsync(State(s): State<AppState>) -> Result<Json<Option<PfsyncConfig>>, StatusCode> {
@@ -360,15 +609,12 @@ struct PfsyncReq {
 async fn update_pfsync(
     State(s): State<AppState>,
     Json(r): Json<PfsyncReq>,
-) -> Result<Json<PfsyncConfig>, StatusCode> {
+) -> Result<Json<Saved<PfsyncConfig>>, HaError> {
     let mut p = s
         .cluster_engine
         .get_pfsync()
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "cluster: failed to get pfsync config");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?
+        .map_err(ha_engine_error)?
         .unwrap_or_else(|| PfsyncConfig::new(Interface(r.sync_interface.clone())));
     p.sync_interface = Interface(r.sync_interface);
     p.sync_peer = r.sync_peer;
@@ -381,15 +627,40 @@ async fn update_pfsync(
     if let Some(v) = r.wg_deconfigure_on_backup {
         p.wg_deconfigure_on_backup = v;
     }
-    let p = s.cluster_engine.set_pfsync(p).await.map_err(|e| {
-        tracing::error!(error = %e, "cluster: failed to set pfsync config");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-    s.cluster_engine.apply_ha_rules().await.map_err(|e| {
-        tracing::error!(error = %e, "cluster: failed to apply HA rules after pfsync update");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-    Ok(Json(p))
+    if let Some(peer) = p.sync_peer
+        && aifw_core::carp::kernel_view()
+            .await
+            .local_addrs
+            .contains(&peer)
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "sync peer {peer} is an address on this node; use the peer's sync-link address"
+            ),
+        ));
+    }
+    let vips = s
+        .cluster_engine
+        .list_carp_vips()
+        .await
+        .map_err(ha_engine_error)?;
+    if let Some(v) = vips.iter().find(|v| v.interface == p.sync_interface) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "{} carries CARP VIP {}; pfsync needs a dedicated link",
+                p.sync_interface, v.virtual_ip
+            ),
+        ));
+    }
+    let p = s
+        .cluster_engine
+        .set_pfsync(p)
+        .await
+        .map_err(ha_engine_error)?;
+    let warning = apply_ha_change(&s, &[]).await;
+    Ok(Json(Saved { item: p, warning }))
 }
 
 async fn list_nodes(State(s): State<AppState>) -> Result<Json<Vec<ClusterNode>>, StatusCode> {
@@ -424,6 +695,7 @@ async fn create_node(
         tracing::error!(error = %e, "cluster: failed to add node");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
+    sync_role(&s).await;
     Ok(Json(node))
 }
 
@@ -448,13 +720,32 @@ async fn update_node(
                 StatusCode::INTERNAL_SERVER_ERROR
             }
         })?;
+    sync_role(&s).await;
     Ok(Json(n))
 }
 
 async fn delete_node(State(s): State<AppState>, Path(id): Path<Uuid>) -> StatusCode {
     match s.cluster_engine.delete_node(id).await {
-        Ok(_) => StatusCode::NO_CONTENT,
-        Err(_) => StatusCode::NOT_FOUND,
+        Ok(_) => {
+            sync_role(&s).await;
+            StatusCode::NO_CONTENT
+        }
+        Err(e) => crate::routes::engine_error(e),
+    }
+}
+
+/// A node's own role changed (or its row appeared): the rc.conf role and
+/// therefore the CARP advskew must follow.
+async fn sync_role(s: &AppState) {
+    if let Err(e) = s.cluster_engine.sync_rc_conf().await {
+        tracing::warn!(error = %e, "cluster: rc.conf sync failed");
+    }
+    match s.cluster_engine.reconcile_kernel_state().await {
+        Ok(r) if !r.errors.is_empty() => {
+            tracing::warn!(errors = ?r.errors, "cluster: kernel reconcile after node change")
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!(error = %e, "cluster: kernel reconcile after node change"),
     }
 }
 
@@ -630,42 +921,71 @@ async fn delete_health(State(s): State<AppState>, Path(id): Path<Uuid>) -> Statu
     }
 }
 
-async fn promote(State(s): State<AppState>) -> StatusCode {
-    let ok = tokio::process::Command::new("sysctl")
-        .arg("net.inet.carp.demotion=0")
-        .status()
+/// Clear this node's operator demotion (manual demote and maintenance
+/// mode). With preemption on, a node whose advskew beats the peer's takes
+/// MASTER back within one advertisement; a secondary stays BACKUP while the
+/// primary is healthy — promote does not force MASTER over a better peer.
+async fn promote(State(s): State<AppState>) -> Result<StatusCode, HaError> {
+    use aifw_core::carp::{self, DemoteReason};
+    carp::undemote(DemoteReason::Manual)
         .await
-        .map(|st| st.success())
-        .unwrap_or(false);
-    if !ok {
-        tracing::warn!("ha: failed to set net.inet.carp.demotion=0 (promote)");
-        return StatusCode::INTERNAL_SERVER_ERROR;
-    }
-    s.cluster_events.emit(ClusterEvent::RoleChanged {
-        from: aifw_common::ClusterRole::Secondary.to_string(),
-        to: aifw_common::ClusterRole::Primary.to_string(),
-        vhid: 0,
-    });
-    StatusCode::NO_CONTENT
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
+    carp::set_maintenance(false)
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
+    record_operator_event(&s, "operator_promote").await;
+    Ok(StatusCode::NO_CONTENT)
 }
 
-async fn demote(State(s): State<AppState>) -> StatusCode {
-    let ok = tokio::process::Command::new("sysctl")
-        .arg("net.inet.carp.demotion=240")
-        .status()
+/// Demote this node until promote or reboot: adds one demotion step, so the
+/// peer takes the VIPs (preemption is on). For a hold that survives a
+/// reboot use `PUT /cluster/maintenance`.
+async fn demote(State(s): State<AppState>) -> Result<StatusCode, HaError> {
+    aifw_core::carp::demote(aifw_core::carp::DemoteReason::Manual)
         .await
-        .map(|st| st.success())
-        .unwrap_or(false);
-    if !ok {
-        tracing::warn!("ha: failed to set net.inet.carp.demotion=240 (demote)");
-        return StatusCode::INTERNAL_SERVER_ERROR;
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
+    record_operator_event(&s, "operator_demote").await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct MaintenanceReq {
+    enabled: bool,
+}
+
+/// Persistent CARP maintenance mode: the node stays demoted (BACKUP) across
+/// reboots until turned off — use it for hardware work or upgrades.
+async fn set_maintenance(
+    State(s): State<AppState>,
+    Json(r): Json<MaintenanceReq>,
+) -> Result<StatusCode, HaError> {
+    aifw_core::carp::set_maintenance(r.enabled)
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
+    record_operator_event(
+        &s,
+        if r.enabled {
+            "maintenance_on"
+        } else {
+            "maintenance_off"
+        },
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Operator actions go into the failover history so the timeline explains
+/// the role change that follows. The role change itself is reported by the
+/// daemon's RoleWatcher when the kernel actually transitions.
+async fn record_operator_event(s: &AppState, cause: &str) {
+    let role = aifw_core::carp::kernel_view().await.aggregate_state();
+    if let Err(e) = s
+        .cluster_engine
+        .record_failover_event(role, role, cause, None)
+        .await
+    {
+        tracing::warn!(error = %e, cause, "cluster: could not record operator event");
     }
-    s.cluster_events.emit(ClusterEvent::RoleChanged {
-        from: aifw_common::ClusterRole::Primary.to_string(),
-        to: aifw_common::ClusterRole::Secondary.to_string(),
-        vhid: 0,
-    });
-    StatusCode::NO_CONTENT
 }
 
 // ============================================================
@@ -700,74 +1020,30 @@ async fn internal_role_changed(
         to: r.to.clone(),
         vhid: r.vhid,
     });
+    // Per-VHID transitions are broadcast for the UI; the node-level
+    // (aggregate, vhid 0) transition is the one that drives side effects
+    // and the failover history (#712).
+    if r.vhid != 0 {
+        return StatusCode::NO_CONTENT;
+    }
+    let detail = aifw_core::carp::kernel_view()
+        .await
+        .vhids
+        .iter()
+        .map(|v| format!("vhid {} {} on {}", v.vhid, v.state, v.interface))
+        .collect::<Vec<_>>()
+        .join(", ");
     if let Err(e) = s
         .cluster_engine
-        .record_failover_event(&r.from, &r.to, "carp_transition", None)
+        .record_failover_event(&r.from, &r.to, "carp_transition", Some(&detail))
         .await
     {
         tracing::warn!(?e, "internal_role_changed: record_failover_event");
     }
-    // #486: WireGuard role-change subscriber. Off unless the operator set
-    // pfsync.wg_deconfigure_on_backup; runs detached so the daemon's
-    // loopback POST returns immediately.
-    match wg_role_action(&r.to, wg_deconfigure_enabled(&s).await) {
-        Some(WgRoleAction::Deconfigure) => {
-            let vpn = s.vpn_engine.clone();
-            tokio::spawn(async move {
-                match vpn.deconfigure_for_backup().await {
-                    Ok(n) => {
-                        tracing::info!(interfaces = n, "ha: WireGuard deconfigured for BACKUP")
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "ha: WireGuard deconfigure on BACKUP failed")
-                    }
-                }
-            });
-        }
-        Some(WgRoleAction::Reconfigure) => {
-            let vpn = s.vpn_engine.clone();
-            tokio::spawn(async move {
-                match vpn.reconfigure_for_master().await {
-                    Ok(n) => tracing::info!(tunnels = n, "ha: WireGuard reconfigured for MASTER"),
-                    Err(e) => {
-                        tracing::warn!(error = %e, "ha: WireGuard reconfigure on MASTER failed")
-                    }
-                }
-            });
-        }
-        None => {}
-    }
+    // IPsec standby / WireGuard follow the role via crate::ha_roles, which
+    // re-checks the kernel itself; this event just makes it look now.
+    crate::ha_roles::nudge();
     StatusCode::NO_CONTENT
-}
-
-/// What the WireGuard subscriber does on a CARP transition (#486).
-#[derive(Debug, PartialEq, Eq)]
-enum WgRoleAction {
-    /// Went BACKUP: tear the interfaces down.
-    Deconfigure,
-    /// Went MASTER: bring the `up` tunnels back.
-    Reconfigure,
-}
-
-/// Pure decision: only when the flag is on, only for the two canonical
-/// roles (`secondary` = BACKUP, `primary` = MASTER); `init`/`unknown` and
-/// anything else are ignored.
-fn wg_role_action(to_role: &str, enabled: bool) -> Option<WgRoleAction> {
-    if !enabled {
-        return None;
-    }
-    match to_role {
-        "secondary" => Some(WgRoleAction::Deconfigure),
-        "primary" => Some(WgRoleAction::Reconfigure),
-        _ => None,
-    }
-}
-
-async fn wg_deconfigure_enabled(s: &AppState) -> bool {
-    match s.cluster_engine.get_pfsync().await {
-        Ok(Some(p)) => p.wg_deconfigure_on_backup,
-        _ => false,
-    }
 }
 
 /// Maximum allowed byte length for the `detail` field in HealthChangedReq.
@@ -842,8 +1118,10 @@ async fn snapshot_put(
         );
         return StatusCode::FORBIDDEN;
     }
-    // Master never accepts pushes — split-brain protection
-    if is_carp_master_locally().await {
+    // Split-brain protection: only a node that is fully BACKUP (or, while
+    // CARP is still initialising, one not configured as primary) accepts a
+    // config push (#712).
+    if !accepts_peer_push(&s).await {
         return StatusCode::CONFLICT;
     }
     match apply_snapshot_data(&s, &body).await {
@@ -862,14 +1140,17 @@ async fn snapshot_put(
 }
 
 async fn snapshot_force(State(s): State<AppState>) -> StatusCode {
-    // Look up the primary peer, fetch its snapshot, and apply locally.
-    let nodes = match s.cluster_engine.list_nodes().await {
+    // Pull from the peer — preferring whichever one currently reports MASTER
+    // — not from "the node configured primary": on the primary itself that
+    // was its own row, with no key, so this always returned 412 (#712).
+    let peers = match s.cluster_engine.peer_nodes().await {
         Ok(n) => n,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR,
     };
-    let peer = match nodes
+    let peer = match peers
         .iter()
-        .find(|n| matches!(n.role, ClusterRole::Primary))
+        .find(|n| n.peer_state.as_deref() == Some("primary"))
+        .or_else(|| peers.first())
     {
         Some(p) => p.clone(),
         None => return StatusCode::PRECONDITION_FAILED,
@@ -917,10 +1198,26 @@ async fn snapshot_force(State(s): State<AppState>) -> StatusCode {
     }
 }
 
-// Thin wrapper that delegates to the single shared implementation in aifw-core.
-// This avoids duplicating the ifconfig grep across cluster.rs and acme_engine.rs.
-async fn is_carp_master_locally() -> bool {
-    aifw_core::is_local_master().await
+/// Whether this node may accept a snapshot / cert push from a peer.
+async fn accepts_peer_push(s: &AppState) -> bool {
+    let live = aifw_core::carp::kernel_view().await;
+    push_allowed(
+        live.aggregate_state(),
+        s.cluster_engine.configured_role().await,
+    )
+}
+
+/// Pure decision for [`accepts_peer_push`]. Any MASTER vhid refuses (that
+/// is split brain from the pusher's side). While CARP is initialising (boot,
+/// interface down) the configured primary refuses: before #712 a primary in
+/// that window accepted a full config replacement from whoever held the
+/// peer key.
+fn push_allowed(aggregate_state: &str, configured: ClusterRole) -> bool {
+    match aggregate_state {
+        "backup" => true,
+        "master" | "split" => false,
+        _ => configured != ClusterRole::Primary,
+    }
 }
 
 async fn apply_snapshot_data(state: &AppState, body: &str) -> Result<String, anyhow::Error> {
@@ -943,14 +1240,31 @@ pub struct FailoverEvent {
     pub detail: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct HistoryQuery {
+    /// Look-back window in days (default 1, max 365)
+    days: Option<u32>,
+    /// Max rows (default 500, max 5000)
+    limit: Option<u32>,
+}
+
 async fn failover_history(
     State(s): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<HistoryQuery>,
 ) -> Result<Json<Vec<FailoverEvent>>, StatusCode> {
+    let days = q.days.unwrap_or(1).clamp(1, 365);
+    let limit = q.limit.unwrap_or(500).clamp(1, 5000);
+    // ts is RFC 3339 with a 'T'; compare against the same format, not
+    // SQLite's space-separated datetime() (which sorted every same-day
+    // event as newer than the cutoff).
+    let since = (chrono::Utc::now() - chrono::Duration::days(i64::from(days))).to_rfc3339();
     sqlx::query_as::<_, FailoverEvent>(
         "SELECT id, ts, from_role, to_role, cause, detail FROM cluster_failover_events
-         WHERE ts >= datetime('now', '-1 day')
-         ORDER BY ts DESC",
+         WHERE ts >= ?1
+         ORDER BY ts DESC LIMIT ?2",
     )
+    .bind(since)
+    .bind(i64::from(limit))
     .fetch_all(&s.pool)
     .await
     .map(Json)
@@ -964,12 +1278,46 @@ async fn failover_history(
 // On-demand health-check trigger (A10)
 // ============================================================
 
-async fn run_health_checks(_state: State<AppState>) -> StatusCode {
-    // Signal the daemon to probe immediately. The HealthProber daemon runs on
-    // its own 1-second tick; this endpoint returns 202 Accepted so the CLI
-    // surface exists and the response is well-defined. A future implementation
-    // may use an internal channel to wake the prober out of band.
-    StatusCode::ACCEPTED
+#[derive(Serialize)]
+struct HealthRunResult {
+    name: String,
+    check_type: HealthCheckType,
+    target: String,
+    healthy: bool,
+}
+
+/// Run every enabled health check once, now, and return the results (#712:
+/// this used to return 202 without probing anything). The daemon's prober
+/// still owns demotion — this is the operator's "test my checks" button.
+async fn run_health_checks(
+    State(s): State<AppState>,
+) -> Result<Json<Vec<HealthRunResult>>, HaError> {
+    let checks = s
+        .cluster_engine
+        .list_health_checks()
+        .await
+        .map_err(ha_engine_error)?;
+    // HTTP checks target operator services, often self-signed; nothing
+    // is sent but a GET, so certificate validity isn't the question.
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let enabled: Vec<HealthCheck> = checks.into_iter().filter(|c| c.enabled).collect();
+    let results = futures_util::future::join_all(enabled.iter().map(|c| {
+        let client = client.clone();
+        async move {
+            HealthRunResult {
+                name: c.name.clone(),
+                check_type: c.check_type,
+                target: c.target.clone(),
+                healthy: aifw_core::ha_probe::run_probe(c, &client).await,
+            }
+        }
+    }))
+    .await;
+    Ok(Json(results))
 }
 
 // ============================================================
@@ -999,9 +1347,9 @@ async fn cert_push(
         );
         return StatusCode::FORBIDDEN;
     }
-    // Master never accepts cert pushes — defends against a stale standby
-    // pushing back during a network partition.
-    if aifw_core::is_local_master().await {
+    // Same split-brain guard as snapshot_put — defends against a stale
+    // standby pushing back during a partition or our boot.
+    if !accepts_peer_push(&s).await {
         return StatusCode::CONFLICT;
     }
 
@@ -1328,24 +1676,19 @@ async fn generate_loopback_key(
 #[cfg(test)]
 mod tests {
     use super::parse_pfctl_si_state_count;
-    use super::{WgRoleAction, wg_role_action};
 
-    /// #486: the WireGuard subscriber only acts when the flag is on and only
-    /// on the two canonical CARP roles.
     #[test]
-    fn wg_role_action_gated_by_flag_and_role() {
-        assert_eq!(
-            wg_role_action("secondary", true),
-            Some(WgRoleAction::Deconfigure)
-        );
-        assert_eq!(
-            wg_role_action("primary", true),
-            Some(WgRoleAction::Reconfigure)
-        );
-        assert_eq!(wg_role_action("init", true), None);
-        assert_eq!(wg_role_action("unknown", true), None);
-        assert_eq!(wg_role_action("secondary", false), None);
-        assert_eq!(wg_role_action("primary", false), None);
+    fn push_guard_refuses_master_and_initialising_primary() {
+        use super::push_allowed;
+        use aifw_common::ClusterRole::*;
+        assert!(push_allowed("backup", Primary));
+        assert!(push_allowed("backup", Secondary));
+        assert!(!push_allowed("master", Secondary));
+        assert!(!push_allowed("split", Secondary));
+        assert!(!push_allowed("init", Primary));
+        assert!(!push_allowed("none", Primary));
+        assert!(push_allowed("init", Secondary));
+        assert!(push_allowed("none", Standalone));
     }
 
     #[test]

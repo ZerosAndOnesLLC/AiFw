@@ -13,10 +13,10 @@
 
 set -u
 
-if [ "$(sysrc -n aifw_cluster_enabled 2>/dev/null)" = "YES" ]; then
-    sysctl net.inet.carp.demotion=240 >/dev/null 2>&1 || true
-    sleep 1
-fi
+# No CARP demotion here: restarting the AiFw services leaves pf, pfsync and
+# the CARP vhids in the kernel untouched, so traffic keeps flowing and a
+# failover would only cost two VIP moves. (Writing demotion=240 here also
+# added another 240 on every run and was never undone, #712.)
 
 LOG=/var/log/aifw/restart.log
 mkdir -p /var/log/aifw 2>/dev/null

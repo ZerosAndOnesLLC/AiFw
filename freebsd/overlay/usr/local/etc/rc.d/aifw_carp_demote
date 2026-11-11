@@ -1,11 +1,15 @@
 #!/bin/sh
 #
 # PROVIDE: aifw_carp_demote
-# REQUIRE: NETWORKING aifw_daemon
+# REQUIRE: FILESYSTEMS kld
+# BEFORE: netif pfsync pf
 # KEYWORD: nojail
 #
-# Clears net.inet.carp.demotion=0 once the data plane is up,
-# so this node can compete in CARP elections after boot.
+# Early-boot CARP hold for HA nodes (#712): enables preemption and places a
+# `boot` demotion before any interface or VIP comes up. aifw-daemon releases
+# it once pf rules are loaded and pfsync's bulk update has completed, so a
+# rebooted node can't take MASTER back with an empty state table. Also
+# re-applies persistent maintenance mode.
 #
 
 . /etc/rc.subr
@@ -16,10 +20,12 @@ load_rc_config $name
 : ${aifw_carp_demote_enable:=NO}
 
 start_cmd="aifw_carp_demote_start"
+stop_cmd=":"
 
 aifw_carp_demote_start() {
     if [ "$(sysrc -n aifw_cluster_enabled 2>/dev/null)" = "YES" ]; then
-        sysctl net.inet.carp.demotion=0 >/dev/null 2>&1 || true
+        /usr/local/libexec/aifw-sudo-carp boot || \
+            echo "aifw_carp_demote: boot hold failed; CARP may preempt before state sync" >&2
     fi
 }
 

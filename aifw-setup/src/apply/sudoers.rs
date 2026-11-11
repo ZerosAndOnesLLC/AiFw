@@ -99,6 +99,7 @@ aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-tcpdump *
 aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-swanctl *
 aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-dummynet
 aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-newsyslog *
+aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-carp *
 
 # --- Broad compat grants ---
 # Kept alongside the narrow helpers above for upgrade compat: in-place
@@ -346,6 +347,7 @@ mod sudoers_tests {
             "/usr/local/libexec/aifw-sudo-swanctl",
             "/usr/local/libexec/aifw-sudo-dummynet",
             "/usr/local/libexec/aifw-sudo-newsyslog",
+            "/usr/local/libexec/aifw-sudo-carp",
         ] {
             assert!(
                 content.contains(helper),

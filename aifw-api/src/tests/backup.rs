@@ -517,6 +517,7 @@ async fn test_prevalidation_rejects_duplicate_wg_ports() {
                 public_key: "K".into(),
                 dns: None,
                 mtu: None,
+                enabled: None,
                 peers: vec![],
             });
     }
@@ -757,4 +758,153 @@ async fn test_restore_skips_unknown_and_invalid_plugins() {
         .await
         .unwrap();
     assert_eq!(names, vec!["notifier".to_string()]);
+}
+
+/// #712: replication must converge. After a standby applies the master's
+/// snapshot, both nodes produce the same snapshot hash (otherwise the master
+/// re-pushes every 10 s forever), and the standby keeps its own cluster
+/// identity: node rows + peer keys, pfsync config, DHCP-HA peer.
+#[tokio::test]
+async fn cluster_sync_converges_and_keeps_node_identity() {
+    use aifw_common::{CarpVip, ClusterNode, ClusterRole, Interface, PfsyncConfig};
+
+    let master = crate::create_app_state_in_memory(plain_auth_settings())
+        .await
+        .unwrap();
+    let standby = crate::create_app_state_in_memory(plain_auth_settings())
+        .await
+        .unwrap();
+
+    // Master: a VIP, its own node table and pfsync peer.
+    master
+        .cluster_engine
+        .add_carp_vip(CarpVip::new(
+            7,
+            "10.0.0.1".parse().unwrap(),
+            24,
+            Interface("em1".into()),
+            "sharedkey".into(),
+        ))
+        .await
+        .unwrap();
+    let mut mp = PfsyncConfig::new(Interface("em2".into()));
+    mp.sync_peer = Some("10.9.9.2".parse().unwrap());
+    master.cluster_engine.set_pfsync(mp).await.unwrap();
+    master
+        .cluster_engine
+        .add_node(ClusterNode::new(
+            "fw-b".into(),
+            "10.0.0.3".parse().unwrap(),
+            ClusterRole::Secondary,
+        ))
+        .await
+        .unwrap();
+
+    // Standby: its own identity, which replication must not touch.
+    let mut sp = PfsyncConfig::new(Interface("em2".into()));
+    sp.sync_peer = Some("10.9.9.1".parse().unwrap());
+    sp.wg_deconfigure_on_backup = true;
+    standby.cluster_engine.set_pfsync(sp).await.unwrap();
+    let peer = standby
+        .cluster_engine
+        .add_node(ClusterNode::new(
+            "fw-a".into(),
+            "10.0.0.2".parse().unwrap(),
+            ClusterRole::Primary,
+        ))
+        .await
+        .unwrap();
+    let key = standby
+        .cluster_engine
+        .generate_peer_api_key(peer.id)
+        .await
+        .unwrap();
+    sqlx::query("INSERT OR REPLACE INTO dhcp_ha_config (key, value) VALUES ('peer', '10.0.0.2')")
+        .execute(&standby.pool)
+        .await
+        .unwrap();
+
+    // The IDS tables belong to aifw-ids; create the one the sync writes.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS ids_suppressions (id TEXT PRIMARY KEY, sid INTEGER, \
+         suppress_type TEXT, ip_cidr TEXT)",
+    )
+    .execute(&standby.pool)
+    .await
+    .unwrap();
+
+    let (body, master_hash) = master.cluster_snapshot_data().await.unwrap();
+    crate::backup::apply_cluster_snapshot(&standby, &body)
+        .await
+        .expect("cluster snapshot applies");
+    standby
+        .config_generation
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let (_, standby_hash) = standby.cluster_snapshot_data().await.unwrap();
+    assert_eq!(
+        master_hash, standby_hash,
+        "snapshot hash must converge after sync"
+    );
+
+    // Replicated: the VIP.
+    let vips = standby.cluster_engine.list_carp_vips().await.unwrap();
+    assert_eq!(vips.len(), 1);
+    assert_eq!(vips[0].vhid, 7);
+    // Kept: node table + outbound key, pfsync peer + flags, DHCP-HA peer.
+    let nodes = standby.cluster_engine.list_nodes().await.unwrap();
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0].name, "fw-a");
+    assert_eq!(
+        standby
+            .cluster_engine
+            .peer_api_key(peer.id)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(key.as_str())
+    );
+    let p = standby.cluster_engine.get_pfsync().await.unwrap().unwrap();
+    assert_eq!(p.sync_peer.unwrap().to_string(), "10.9.9.1");
+    assert!(p.wg_deconfigure_on_backup);
+    let (dhcp_peer,): (String,) =
+        sqlx::query_as("SELECT value FROM dhcp_ha_config WHERE key = 'peer'")
+            .fetch_one(&standby.pool)
+            .await
+            .unwrap();
+    assert_eq!(dhcp_peer, "10.0.0.2");
+}
+
+/// #712: a WireGuard tunnel's running state survives export/restore — a
+/// tunnel imported as `down` would never start on failover.
+#[tokio::test]
+async fn wireguard_enabled_state_round_trips() {
+    let state = crate::create_app_state_in_memory(plain_auth_settings())
+        .await
+        .unwrap();
+    let mut config = crate::backup::build_current_config(&state).await.unwrap();
+    config
+        .vpn
+        .wireguard
+        .push(aifw_core::config::WireguardTunnelConfig {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "site".into(),
+            interface: "wg3".into(),
+            listen_port: 51823,
+            address: "10.77.0.1/24".into(),
+            address6: None,
+            private_key: "cGl6emFwaXp6YXBpenphcGl6emFwaXp6YXBpenphcGk=".into(),
+            public_key: "cHViY3B1YmNwdWJjcHViY3B1YmNwdWJjcHViY3B1YmM=".into(),
+            dns: None,
+            mtu: None,
+            enabled: Some(true),
+            peers: vec![],
+        });
+    crate::backup::apply_firewall_config(&state, &config, &Default::default())
+        .await
+        .expect("restore");
+    let t = state.vpn_engine.list_wg_tunnels().await.unwrap();
+    assert_eq!(t.len(), 1);
+    assert_eq!(t[0].status, aifw_common::VpnStatus::Up);
+    let again = crate::backup::build_current_config(&state).await.unwrap();
+    assert_eq!(again.vpn.wireguard[0].enabled, Some(true));
 }

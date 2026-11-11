@@ -109,6 +109,10 @@ pub(super) const EMBEDDED_SUDO_HELPERS: &[(&str, &str)] = &[
         include_str!("../../../freebsd/overlay/usr/local/libexec/aifw-sudo-newsyslog"),
     ),
     (
+        "aifw-sudo-carp",
+        include_str!("../../../freebsd/overlay/usr/local/libexec/aifw-sudo-carp"),
+    ),
+    (
         "aifw-sudo-dummynet",
         include_str!("../../../freebsd/overlay/usr/local/libexec/aifw-sudo-dummynet"),
     ),

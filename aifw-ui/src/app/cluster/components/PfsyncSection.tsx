@@ -193,17 +193,17 @@ export function PfsyncSection({
                   {
                     value: "conservative",
                     label: "Conservative",
-                    desc: "Higher advskew — only promotes after several missed heartbeats. Best for unstable links.",
+                    desc: "Secondary advskew 100. The backup takes over ~3.4 s after the master stops advertising. Most margin against both nodes claiming MASTER on a lossy link.",
                   },
                   {
                     value: "tight",
                     label: "Tight",
-                    desc: "Balanced — promotes after 2–3 missed heartbeats. Recommended for most deployments.",
+                    desc: "Secondary advskew 20 — takeover after ~3.1 s.",
                   },
                   {
                     value: "aggressive",
                     label: "Aggressive",
-                    desc: "Low advskew — promotes quickly. Use only on very reliable dedicated sync links.",
+                    desc: "Secondary advskew 10 — takeover after ~3.0 s. CARP's advertisement base is 1 s minimum, so a hard failure is never detected in under ~3 s; planned failovers (demote, maintenance, shutdown) move in about one second with any profile.",
                   },
                 ] as const
               ).map(({ value, label, desc }) => (
@@ -244,7 +244,9 @@ export function PfsyncSection({
                 }
                 className="w-4 h-4 rounded border-gray-600 bg-gray-900 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
               />
-              <span className="text-sm text-gray-300">Defer</span>
+              <span className="text-sm text-gray-300" title="Hold the first packet of each new connection until the peer acknowledges its state. Adds latency to every new connection; leave off unless you run active/active.">
+                Defer
+              </span>
             </label>
             <label className="flex items-center gap-2 cursor-pointer select-none">
               <input
@@ -277,21 +279,10 @@ export function PfsyncSection({
               </label>
             </div>
             <div>
-              <label className="flex items-center gap-2 cursor-pointer select-none"
-                title="Tear WireGuard interfaces down while this node is CARP BACKUP and bring them back on MASTER. Leave off unless a peer keeps a handshake alive with the standby.">
-                <input
-                  type="checkbox"
-                  checked={pfsyncForm.wg_deconfigure_on_backup}
-                  onChange={(e) =>
-                    setPfsyncForm((f) => ({
-                      ...f,
-                      wg_deconfigure_on_backup: e.target.checked,
-                    }))
-                  }
-                  className="w-4 h-4 rounded border-gray-600 bg-gray-900 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
-                />
-                <span className="text-sm text-gray-300">Deconfigure WireGuard on BACKUP</span>
-              </label>
+<p className="text-xs text-gray-400">
+                WireGuard runs only on the CARP MASTER; the standby brings its
+                tunnels up when it takes over.
+              </p>
               <p className="text-xs text-gray-500 mt-0.5 ml-6">
                 Auto-derives the rDHCP HA peer list from the cluster nodes —
                 when enabled, you don&apos;t have to enter peer addresses again
@@ -316,7 +307,7 @@ export function PfsyncSection({
           </div>
           <div>Latency profile: {pfsync.latency_profile}</div>
           <div>DHCP link: {pfsync.dhcp_link ? "yes" : "no"}</div>
-          <div>WireGuard down on BACKUP: {pfsync.wg_deconfigure_on_backup ? "yes" : "no"}</div>
+          <div>WireGuard: runs on the CARP MASTER only</div>
           <div>Enabled: {pfsync.enabled ? "yes" : "no"}</div>
           <div className="pt-1">
             <button

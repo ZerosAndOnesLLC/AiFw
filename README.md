@@ -82,7 +82,7 @@ High-performance firewall for FreeBSD built in Rust on top of pf. Optional AI-as
 - **Geo-IP filtering** — country-based block/allow with GeoLite2 CSV, CIDR aggregation
 - **TLS inspection** — JA3/JA3S fingerprinting, SNI filtering, cert validation, version enforcement
 - **Plugins** — built-in Threat Intel Feeds (Spamhaus/abuse.ch/DShield blocklists into pf) and Notifier (ntfy/Discord/Slack/Telegram/webhook alerts); native Rust plugin API with event hooks, typed settings and a sandboxed pf context ([guide](docs/plugins.md))
-- **High availability (active-passive pair)** — Two AiFw nodes share a CARP virtual IP and pfsync state. Reboot the master and TCP sessions survive on the standby with no operator intervention. Setup via the UI in <15 minutes. See [docs/ha.md](docs/ha.md) for setup, ops, and failure modes.
+- **High availability (active-passive pair, beta)** — Two AiFw nodes share CARP virtual IPs and pfsync state, with preemption, reason-tracked demotion, a boot hold until state sync completes, persistent maintenance mode, peer health and split-brain detection. Designed so TCP sessions survive a master reboot; automated two-node validation is tracked in #534. See [docs/ha.md](docs/ha.md) for setup, ops, and failure modes.
 - **Remote syslog** — forward pf packet logs, IDS alerts, and app logs to a syslog server/SIEM (UDP/TCP, BSD or RFC 5424, per-category toggles, optional local-storage off)
 - **Secrets sealed at rest** — WireGuard/IPsec keys, CARP and integration credentials, TOTP seeds and cluster keys are AES-256-GCM encrypted in the database under a master key kept outside it (`/var/db/aifw/secrets.key`); legacy plaintext rows are sealed automatically on the first start after upgrade
 - **Log rotation** — one size-based newsyslog policy (cap, generations, compression) for every AiFw service log, with per-log sizes and rotate-now in Settings → Logging and `aifw logrotate`
@@ -202,7 +202,7 @@ NextJS application with 11 pages:
 - **Threats** — AI detection timeline, severity scoring, auto-response history *(WIP — AI module is experimental)*
 - **Geo-IP** — country rules, IP lookup
 - **VPN** — WireGuard tunnels + peers, IKEv2 IPsec site-to-site tunnels
-- **Cluster** — CARP VIPs, pfsync, node health, health checks
+- **Cluster** — CARP VIPs, pfsync, node health, health checks, HA dashboard (per-VHID kernel state, demotion, maintenance mode, split brain)
 - **Logs** — filterable audit log with color-coded actions
 - **Settings** — metrics backend (local/PostgreSQL), API, TLS policy
 

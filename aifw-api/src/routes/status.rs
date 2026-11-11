@@ -221,6 +221,12 @@ pub async fn reload(State(state): State<AppState>) -> Result<Json<MessageRespons
         tracing::error!("Failed to apply NAT rules: {e}");
         errors.push(format!("nat: {e}"));
     }
+    // CARP / pfsync pass rules (#712) — without them the default block
+    // drops pfsync on the sync link and CARP on interfaces with no pass.
+    if let Err(e) = state.cluster_engine.apply_ha_rules().await {
+        tracing::error!("Failed to apply HA rules: {e}");
+        errors.push(format!("ha: {e}"));
+    }
     // Clear pending flags for firewall and NAT
     state
         .set_pending(|p| {

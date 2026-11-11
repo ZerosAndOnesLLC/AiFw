@@ -194,10 +194,16 @@ enum ClusterAction {
         #[command(subcommand)]
         action: HealthAction,
     },
-    /// Promote this node to master immediately (sysctl carp.demotion=0)
+    /// Clear this node's operator demotion and maintenance mode; with
+    /// preemption on, it retakes MASTER if its advskew beats the peer's
     Promote,
-    /// Demote this node to backup immediately (sysctl carp.demotion=240)
+    /// Demote this node so the peer takes the VIPs (until promote or reboot)
     Demote,
+    /// Persistent CARP maintenance mode (survives reboot)
+    Maintenance {
+        #[command(subcommand)]
+        action: MaintenanceAction,
+    },
     /// Force a snapshot pull from peer
     Sync,
     /// Run local-side verification checks. Exits 0 on healthy, non-zero on failure.
@@ -205,6 +211,14 @@ enum ClusterAction {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum MaintenanceAction {
+    /// Enter maintenance: stay BACKUP, across reboots, until turned off
+    On,
+    /// Leave maintenance mode
+    Off,
 }
 
 #[derive(Subcommand)]
@@ -245,7 +259,7 @@ enum PfsyncAction {
         latency_profile: String,
         #[arg(long, default_value_t = false)]
         dhcp_link: bool,
-        /// Tear WireGuard interfaces down on CARP BACKUP, back up on MASTER (#486)
+        /// Legacy (#486), ignored: since #712 WireGuard always follows the CARP role
         #[arg(long, default_value_t = false)]
         wg_deconfigure_on_backup: bool,
     },
@@ -1911,6 +1925,9 @@ async fn main() -> anyhow::Result<()> {
             },
             ClusterAction::Promote => commands::cluster_promote().await?,
             ClusterAction::Demote => commands::cluster_demote().await?,
+            ClusterAction::Maintenance { action } => {
+                commands::cluster_maintenance(matches!(action, MaintenanceAction::On)).await?
+            }
             ClusterAction::Sync => commands::cluster_sync().await?,
             ClusterAction::Verify { json } => return commands::cluster_verify(json).await,
         },

@@ -67,7 +67,7 @@ async fn test_pfsync_config() {
 
     let fetched = engine.get_pfsync().await.unwrap().unwrap();
     assert_eq!(fetched.sync_interface.0, "em1");
-    assert!(fetched.defer);
+    assert!(!fetched.defer, "pfsync defer is off by default");
     assert!(fetched.enabled);
 }
 

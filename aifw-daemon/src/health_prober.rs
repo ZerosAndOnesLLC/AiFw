@@ -1,8 +1,8 @@
 //! Schedules health-check rows; on local failure, demotes CARP to trigger
 //! failover. On recovery (after a hold-down window), re-enables election.
 
-use aifw_common::{HealthCheck, HealthCheckType};
 use aifw_core::ClusterEngine;
+use aifw_core::carp::DemoteReason;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -32,7 +32,14 @@ impl HealthProber {
         let mut tick = tokio::time::interval(Duration::from_secs(1));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut state: HashMap<Uuid, ProbeState> = HashMap::new();
-        let mut demoted = false;
+        // Survive a daemon restart: the demotion ledger is the source of
+        // truth for whether a health demotion is currently held (#712).
+        let mut demoted = aifw_core::carp::held_reasons()
+            .await
+            .contains(&DemoteReason::Health);
+        if demoted {
+            tracing::info!("ha: health demotion still held from before restart");
+        }
         let mut recovery_started: Option<Instant> = None;
 
         // Client for operator-defined HTTP GET probes. These target
@@ -86,7 +93,7 @@ impl HealthProber {
                 }
                 st.last_run = Some(Instant::now());
 
-                let ok = run_probe(c, &probe_client).await;
+                let ok = aifw_core::ha_probe::run_probe(c, &probe_client).await;
                 let outcome = apply_probe_result(st, ok, c.failures_before_down);
                 if outcome.became_healthy {
                     // Notification is best-effort — a failed POST must not
@@ -109,20 +116,26 @@ impl HealthProber {
             }
 
             if any_failing_local && !demoted {
-                let demote_ok = tokio::process::Command::new("sysctl")
-                    .arg("net.inet.carp.demotion=240")
-                    .status()
-                    .await
-                    .map(|s| s.success())
-                    .unwrap_or(false);
-                if demote_ok {
-                    demoted = true;
-                    recovery_started = None;
-                    tracing::warn!("ha: demoting CARP due to local health failure");
-                } else {
-                    tracing::warn!(
-                        "ha: failed to set net.inet.carp.demotion=240 on health failure"
-                    );
+                // Only a clustered node has anything to fail over.
+                if !self.is_clustered().await {
+                    continue;
+                }
+                match aifw_core::carp::demote(DemoteReason::Health).await {
+                    Ok(()) => {
+                        demoted = true;
+                        recovery_started = None;
+                        tracing::warn!("ha: demoting CARP due to local health failure");
+                        if let Err(e) = self
+                            .engine
+                            .record_failover_event("-", "-", "health_demote", None)
+                            .await
+                        {
+                            tracing::warn!(error = %e, "ha: could not record health demotion");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "ha: CARP demotion on health failure failed");
+                    }
                 }
             } else if any_failing_local && demoted {
                 // re-failed during hold-down: restart the recovery clock so a single-tick
@@ -141,22 +154,36 @@ impl HealthProber {
                         if now.duration_since(started)
                             >= Duration::from_secs(RECOVERY_HOLD_DOWN_SECS) =>
                     {
-                        let restore_ok = tokio::process::Command::new("sysctl")
-                            .arg("net.inet.carp.demotion=0")
-                            .status()
-                            .await
-                            .map(|s| s.success())
-                            .unwrap_or(false);
-                        if restore_ok {
-                            demoted = false;
-                            recovery_started = None;
-                            tracing::info!("ha: clearing CARP demotion after hold-down");
-                        } else {
-                            tracing::warn!("ha: failed to clear CARP demotion during recovery");
+                        match aifw_core::carp::undemote(DemoteReason::Health).await {
+                            Ok(()) => {
+                                demoted = false;
+                                recovery_started = None;
+                                tracing::info!("ha: health demotion released after hold-down");
+                                if let Err(e) = self
+                                    .engine
+                                    .record_failover_event("-", "-", "health_recover", None)
+                                    .await
+                                {
+                                    tracing::warn!(error = %e, "ha: could not record health recovery");
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "ha: releasing health demotion failed")
+                            }
                         }
                     }
                     _ => {}
                 }
+            }
+        }
+    }
+
+    async fn is_clustered(&self) -> bool {
+        match self.engine.list_carp_vips().await {
+            Ok(v) => !v.is_empty(),
+            Err(e) => {
+                tracing::warn!(error = %e, "ha: could not read CARP VIPs");
+                false
             }
         }
     }
@@ -248,71 +275,6 @@ fn apply_probe_result(st: &mut ProbeState, ok: bool, failures_before_down: u32) 
             healthy_after: st.healthy,
         }
     }
-}
-
-async fn run_probe(c: &HealthCheck, client: &reqwest::Client) -> bool {
-    match c.check_type {
-        HealthCheckType::Ping => probe_ping(&c.target).await,
-        HealthCheckType::TcpPort => probe_tcp(&c.target, c.timeout_secs).await,
-        HealthCheckType::HttpGet => probe_http(client, &c.target, c.timeout_secs).await,
-        HealthCheckType::PfStatus => probe_pf().await,
-        HealthCheckType::ProcessRunning => probe_process(&c.target).await,
-    }
-}
-
-async fn probe_ping(target: &str) -> bool {
-    tokio::process::Command::new("ping")
-        .args(["-c", "1", "-W", "1000", target])
-        .output()
-        .await
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-async fn probe_tcp(target: &str, timeout_secs: u32) -> bool {
-    use tokio::net::TcpStream;
-    use tokio::time::timeout;
-    timeout(
-        Duration::from_secs(timeout_secs as u64),
-        TcpStream::connect(target),
-    )
-    .await
-    .map(|r| r.is_ok())
-    .unwrap_or(false)
-}
-
-async fn probe_http(client: &reqwest::Client, target: &str, timeout_secs: u32) -> bool {
-    // Use per-request timeout so the shared client's pool settings don't interfere.
-    match client
-        .get(target)
-        .timeout(Duration::from_secs(timeout_secs as u64))
-        .send()
-        .await
-    {
-        Ok(r) => r.status().is_success(),
-        Err(_) => false,
-    }
-}
-
-async fn probe_pf() -> bool {
-    tokio::process::Command::new("pfctl")
-        .arg("-si")
-        .output()
-        .await
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-/// Check that a named process is running via `pgrep -x <name>`.
-/// `pgrep -x` matches against the exact process name (not the full command line).
-async fn probe_process(process_name: &str) -> bool {
-    tokio::process::Command::new("pgrep")
-        .arg("-x")
-        .arg(process_name)
-        .output()
-        .await
-        .map(|o| o.status.success())
-        .unwrap_or(false)
 }
 
 // ============================================================

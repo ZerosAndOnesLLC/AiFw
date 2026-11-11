@@ -605,9 +605,9 @@ impl VpnEngine {
         // ListenAddress for explicit binding; if AiFw ever migrates to one,
         // this is where the per-iface bind would be wired.
         //
-        // #486: with `wg_deconfigure_on_backup` on, `deconfigure_for_backup`
-        // /`reconfigure_for_master` tear these interfaces down/up on CARP
-        // transitions without touching the DB status.
+        // #486/#712: in a cluster, `deconfigure_for_backup` /
+        // `reconfigure_for_master` (driven by aifw-api's ha_roles) tear these
+        // interfaces down/up with the CARP role without touching the DB status.
         let listen_port_s = tunnel.listen_port.to_string();
         let output = crate::sudo::wg(
             "set",
@@ -809,6 +809,16 @@ impl VpnEngine {
         let mut n = 0u32;
         for t in tunnels.iter().filter(|t| t.status == VpnStatus::Up) {
             let iface = &t.interface.0;
+            // Not running (e.g. a node that has been BACKUP since boot):
+            // nothing to tear down.
+            let present = tokio::process::Command::new("ifconfig")
+                .arg(iface)
+                .output()
+                .await
+                .is_ok_and(|o| o.status.success());
+            if !present {
+                continue;
+            }
             match crate::sudo::ifconfig(iface, "destroy", &[]).await {
                 Ok(o) if o.status.success() => {
                     n += 1;

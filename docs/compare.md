@@ -104,9 +104,11 @@ A fair, honest comparison. Where a competitor is stronger, we say so. This matri
 <tr><td>CBQ</td><td class="no">—</td><td class="yes">✓</td><td class="yes">✓</td></tr>
 
 <tr class="section-row"><td colspan="4">High availability</td></tr>
-<tr><td>CARP (virtual IPs)</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-<tr><td>pfsync (state sync)</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-<tr><td>Config sync</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+<tr><td>CARP (virtual IPs)</td><td class="partial">beta</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+<tr><td>pfsync (state sync)</td><td class="partial">beta</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+<tr><td>Config sync</td><td class="partial">beta (all-or-nothing)</td><td class="yes">✓ (per section)</td><td class="yes">✓ (per section)</td></tr>
+<tr><td>Persistent CARP maintenance mode</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+<tr><td>Split-brain detection</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td></tr>
 
 <tr class="section-row"><td colspan="4">Reverse proxy</td></tr>
 <tr><td>Built-in proxy</td><td class="yes">TrafficCop</td><td class="no">—</td><td class="no">—</td></tr>
