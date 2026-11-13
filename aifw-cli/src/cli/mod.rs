@@ -6,6 +6,7 @@ pub mod config;
 pub mod connect;
 pub mod ctx;
 pub mod exit;
+pub mod fanout;
 pub mod global;
 pub mod io;
 pub mod onbox;

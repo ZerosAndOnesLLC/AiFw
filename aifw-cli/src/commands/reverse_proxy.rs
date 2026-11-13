@@ -1,8 +1,7 @@
 //! `aifw reverse-proxy …` — TrafficCop reverse proxy via the API: service
 //! control plus CRUD over every routing collection.
 
-use clap::{Args, Subcommand};
-use serde_json::{Value, json};
+use clap::Subcommand;
 
 use crate::cli::output::Col;
 use crate::cli::{Ctx, Format, col, wide};
@@ -80,47 +79,7 @@ pub enum ReverseProxyCmd {
     ShowConfig,
 }
 
-/// A collection: a verb (default `list`), plus the legacy `--json`.
-#[derive(Debug, Args)]
-pub struct Coll {
-    #[command(subcommand)]
-    pub action: Option<Crud>,
-    #[arg(long, hide = true)]
-    pub json: bool,
-}
-
-/// The same verbs for every routing collection. Objects are JSON/YAML in
-/// the API's shape (see `list -o json` for examples).
-#[derive(Debug, Subcommand)]
-pub enum Crud {
-    /// List
-    #[command(visible_alias = "ls")]
-    List,
-    /// Show one (by id or name)
-    Show { id: String },
-    /// Create from a JSON/YAML file (- for stdin)
-    Add {
-        #[arg(short = 'f', long = "file")]
-        file: String,
-    },
-    /// Update from a JSON/YAML file, merged onto the current object
-    Edit {
-        id: String,
-        #[arg(short = 'f', long = "file")]
-        file: String,
-    },
-    /// Enable
-    Enable { id: String },
-    /// Disable
-    Disable { id: String },
-    /// Delete
-    #[command(visible_alias = "rm")]
-    Remove {
-        id: String,
-        #[arg(short, long)]
-        yes: bool,
-    },
-}
+use super::resource::{Coll, Crud, Resource};
 
 fn cols_for(path: &str) -> Vec<Col> {
     let mut c = vec![col("ID", "/id"), col("NAME", "/name")];
@@ -142,74 +101,12 @@ fn cols_for(path: &str) -> Vec<Col> {
     c
 }
 
-async fn find(client: &aifw_client::Client, path: &str, id: &str) -> anyhow::Result<Value> {
-    let all = client.get(path).await?;
-    crate::cli::output::rows(&all)
-        .into_iter()
-        .find(|r| r["id"].to_string().trim_matches('"') == id || r["name"] == json!(id))
-        .cloned()
-        .ok_or_else(|| aifw_client::ClientError::NotFound(format!("{id} in {path}")).into())
-}
-
-fn id_of(v: &Value) -> String {
-    v["id"].to_string().trim_matches('"').to_string()
-}
-
-async fn crud(
-    ctx: &mut Ctx,
-    client: &aifw_client::Client,
-    path: &str,
-    cmd: Crud,
-) -> anyhow::Result<()> {
-    match cmd {
-        Crud::List => {
-            let v = client.get(path).await?;
-            ctx.list(&v, &cols_for(path))
-        }
-        Crud::Show { id } => {
-            let v = find(client, path, &id).await?;
-            ctx.raw(&v)
-        }
-        Crud::Add { file } => {
-            let body = crate::cli::body::read(&mut ctx.io, &file)?;
-            let v = client.post(path, &body).await?;
-            ctx.message(&v, "Created")
-        }
-        Crud::Edit { id, file } => {
-            let mut cur = find(client, path, &id).await?;
-            let patch = crate::cli::body::read(&mut ctx.io, &file)?;
-            crate::cli::body::merge(&mut cur, &patch);
-            let v = client.put(&format!("{path}/{}", id_of(&cur)), &cur).await?;
-            ctx.message(&v, "Updated")
-        }
-        Crud::Enable { id } => set_enabled(ctx, client, path, &id, true).await,
-        Crud::Disable { id } => set_enabled(ctx, client, path, &id, false).await,
-        Crud::Remove { id, yes } => {
-            let cur = find(client, path, &id).await?;
-            ctx.confirm(
-                &format!(
-                    "Delete {} ({id})?",
-                    cur["name"].as_str().unwrap_or("object")
-                ),
-                yes,
-            )?;
-            let v = client.delete(&format!("{path}/{}", id_of(&cur))).await?;
-            ctx.message(&v, "Deleted")
-        }
+fn res(path: &str) -> Resource {
+    Resource {
+        path: path.to_string(),
+        what: "object",
+        cols: cols_for(path),
     }
-}
-
-async fn set_enabled(
-    ctx: &mut Ctx,
-    client: &aifw_client::Client,
-    path: &str,
-    id: &str,
-    on: bool,
-) -> anyhow::Result<()> {
-    let mut cur = find(client, path, id).await?;
-    cur["enabled"] = json!(on);
-    let v = client.put(&format!("{path}/{}", id_of(&cur)), &cur).await?;
-    ctx.message(&v, if on { "Enabled" } else { "Disabled" })
 }
 
 async fn coll(
@@ -218,10 +115,16 @@ async fn coll(
     path: &str,
     c: Coll,
 ) -> anyhow::Result<()> {
-    if c.json {
-        ctx.force_format(Format::Json);
-    }
-    crud(ctx, client, path, c.action.unwrap_or(Crud::List)).await
+    super::resource::coll(ctx, client, &res(path), c).await
+}
+
+async fn crud(
+    ctx: &mut Ctx,
+    client: &aifw_client::Client,
+    path: &str,
+    cmd: Crud,
+) -> anyhow::Result<()> {
+    super::resource::crud(ctx, client, &res(path), cmd).await
 }
 
 /// The old `routers` / `services` / `middlewares` list shortcuts.

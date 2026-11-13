@@ -71,7 +71,9 @@ deferred items M5/L5 remain deferred.)
 - [ ] logs --follow (poll), pending --watch (SSE), top (/ws), update os-upgrade --wait, long timeouts
 
 ## Phase 5 — Fleet fan-out
-- [ ] --context a,b / --all-contexts on read-only commands, merged output, exit 8
+- [x] --context a,b / --all-contexts (+ --parallel N) on read-only commands; per-context
+      sections or [{context, exit_code, result, error}] with -o json; exit 8 on partial
+      failure; writes refused
 
 ## Phase 6 — `aifw local` + DB-free guard
 - [x] Move break-glass to commands/local/ (status/reload/reconcile/init/ratelimit/update/

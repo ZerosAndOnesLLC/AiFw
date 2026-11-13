@@ -199,6 +199,7 @@ mod auth;
 mod backup;
 mod cli_basic;
 mod cli_config;
+mod cli_fanout;
 mod cli_harness;
 mod cli_nat;
 mod cli_ops;

@@ -2,6 +2,7 @@
 //! Each group is a clap enum plus `run()`, reached by module path
 //! (`commands::rules::run`). Only `local` touches the database or pf.
 
+pub mod api_keys;
 pub mod cluster;
 pub mod config;
 pub mod context;
@@ -16,6 +17,7 @@ pub mod logs;
 pub mod multiwan;
 pub mod nat;
 pub mod plugins;
+pub mod resource;
 pub mod reverse_proxy;
 pub mod routes;
 pub mod rules;

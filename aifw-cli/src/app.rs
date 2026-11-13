@@ -56,6 +56,11 @@ enum Commands {
         #[command(subcommand)]
         action: Option<commands::staging::ConfirmCmd>,
     },
+    /// Your API keys for scripts and other machines
+    ApiKeys {
+        #[command(subcommand)]
+        action: commands::api_keys::ApiKeysCmd,
+    },
     /// Break-glass operations that work without the API (root, on the appliance)
     Local {
         #[command(subcommand)]
@@ -234,7 +239,8 @@ where
     T: Into<std::ffi::OsString> + Clone,
 {
     let mut io = io;
-    let cli = match Cli::try_parse_from(args) {
+    let args: Vec<std::ffi::OsString> = args.into_iter().map(Into::into).collect();
+    let cli = match Cli::try_parse_from(&args) {
         Ok(c) => c,
         Err(e) => {
             use clap::error::ErrorKind;
@@ -257,6 +263,11 @@ where
             };
         }
     };
+    // Fan-out: --context a,b or --all-contexts on a read-only command.
+    let names = cli.global.context_names();
+    if cli.global.all_contexts || names.len() > 1 {
+        return fan_out(&args, cli.global.clone(), io, env).await;
+    }
     let mut ctx = Ctx::new(cli.global.clone(), io, env);
     match dispatch(cli, &mut ctx).await {
         Ok(()) => exit::OK,
@@ -277,6 +288,56 @@ where
     }
 }
 
+/// The subcommand chain the user typed (`["rules", "list"]`).
+fn command_path(args: &[std::ffi::OsString]) -> Vec<String> {
+    use clap::CommandFactory;
+    let mut path = Vec::new();
+    if let Ok(m) = Cli::command().try_get_matches_from(args) {
+        let mut cur = m.subcommand();
+        while let Some((name, sub)) = cur {
+            path.push(name.to_string());
+            cur = sub.subcommand();
+        }
+    }
+    path
+}
+
+async fn fan_out(
+    args: &[std::ffi::OsString],
+    g: crate::cli::global::GlobalArgs,
+    mut io: Io,
+    env: Env,
+) -> i32 {
+    let fail = |io: &mut Io, e: anyhow::Error| {
+        io.eprintln(&format!("Error: {e:#}"));
+        exit::code_for(&e)
+    };
+    let path = command_path(args);
+    if let Err(e) = crate::cli::fanout::require_read_only(&path) {
+        return fail(&mut io, e.into());
+    }
+    let store = crate::cli::config::Store::new(&env.config_dir);
+    let contexts = if g.all_contexts {
+        match store.load_config() {
+            Ok(c) => c.contexts.keys().cloned().collect::<Vec<_>>(),
+            Err(e) => return fail(&mut io, e),
+        }
+    } else {
+        g.context_names()
+    };
+    if contexts.is_empty() {
+        return fail(
+            &mut io,
+            exit::CliError::Usage("no saved contexts to fan out to".into()).into(),
+        );
+    }
+    let outcomes = crate::cli::fanout::run_all(args.to_vec(), contexts, g.parallel, env).await;
+    match crate::cli::fanout::report(&mut io, &outcomes, g.output.unwrap_or_default()) {
+        Ok(code) => code,
+        Err(e) => fail(&mut io, e),
+    }
+}
+
 async fn dispatch(cli: Cli, ctx: &mut Ctx) -> anyhow::Result<()> {
     // #298: secrets master key beside the database (shared with aifw-api).
     aifw_core::secrets::configure_from_db_path(&cli.db);
@@ -289,6 +350,7 @@ async fn dispatch(cli: Cli, ctx: &mut Ctx) -> anyhow::Result<()> {
         Commands::Pending { watch } => commands::staging::pending(ctx, watch).await?,
         Commands::Apply => commands::staging::apply(ctx).await?,
         Commands::Confirm { action } => commands::staging::confirm(ctx, action).await?,
+        Commands::ApiKeys { action } => commands::api_keys::run(ctx, action).await?,
         Commands::Local { action } => commands::local::run(ctx, action, &cli.db).await?,
         Commands::Init { path } => {
             commands::local::init(path.as_deref().unwrap_or(&cli.db)).await?;

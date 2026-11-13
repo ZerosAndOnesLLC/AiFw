@@ -11,6 +11,14 @@ pub struct GlobalArgs {
     #[arg(long, global = true, env = "AIFW_CONTEXT", value_name = "NAME")]
     pub context: Option<String>,
 
+    /// Run a read-only command against every saved context
+    #[arg(long, global = true, conflicts_with = "context")]
+    pub all_contexts: bool,
+
+    /// How many contexts a fan-out talks to at once
+    #[arg(long, global = true, default_value_t = 8, value_name = "N")]
+    pub parallel: usize,
+
     /// API base URL, overriding the context (e.g. https://10.0.0.1:8080)
     #[arg(long, global = true, env = "AIFW_API_URL", value_name = "URL")]
     pub url: Option<String>,
