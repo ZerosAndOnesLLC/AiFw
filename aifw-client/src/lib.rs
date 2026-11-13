@@ -10,7 +10,7 @@ pub mod error;
 pub mod tls;
 
 pub use auth::{Auth, Session, SessionStore, TokenPair, credential_from_token};
-pub use client::{Client, ClientBuilder, LoginOutcome, Upload};
+pub use client::{Client, ClientBuilder, LoginOutcome, Upload, UploadFile};
 pub use error::{ClientError, Result};
 
 /// Default base URL of the API on the appliance itself (the API serves

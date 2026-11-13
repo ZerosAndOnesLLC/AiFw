@@ -9,6 +9,17 @@ use crate::cli::onbox;
 
 #[derive(Debug, Subcommand)]
 pub enum LocalCmd {
+    /// pf / anchor / DNS-backend status read straight from the box
+    Status,
+    /// Load rules, NAT, queues and rate limits from the database into pf
+    Reload,
+    /// Repair missing pf anchor hooks and rc.conf DNS backend drift
+    Reconcile,
+    /// Create the database (first boot / recovery)
+    Init {
+        #[arg(long)]
+        path: Option<std::path::PathBuf>,
+    },
     /// Mint the root-only on-box CLI key (/usr/local/etc/aifw/cli.key)
     ///
     /// Happens automatically the first time `aifw` runs as root with no
@@ -20,8 +31,12 @@ pub enum LocalCmd {
     },
 }
 
-pub async fn run(ctx: &mut Ctx, cmd: LocalCmd) -> anyhow::Result<()> {
+pub async fn run(ctx: &mut Ctx, cmd: LocalCmd, db: &std::path::Path) -> anyhow::Result<()> {
     match cmd {
+        LocalCmd::Status => super::status(db).await,
+        LocalCmd::Reload => super::reload(db).await,
+        LocalCmd::Reconcile => super::reconcile(db).await,
+        LocalCmd::Init { path } => super::init(path.as_deref().unwrap_or(db)).await,
         LocalCmd::CliKey { rotate } => cli_key(ctx, rotate),
     }
 }

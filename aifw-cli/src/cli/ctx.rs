@@ -54,6 +54,11 @@ impl Ctx {
         self.format.unwrap_or_default()
     }
 
+    /// Force a format (legacy per-command `--json` flags).
+    pub fn force_format(&mut self, f: Format) {
+        self.format = Some(f);
+    }
+
     /// Resolve the target for the selected (single) context.
     pub fn target(&mut self) -> anyhow::Result<Target> {
         let names = self.g.context_names();
@@ -106,6 +111,21 @@ impl Ctx {
         let t = output::table(&rows, cols, f);
         self.io.println(&t);
         Ok(())
+    }
+
+    /// Like [`Self::list`] but each row is reshaped by `f` for the table
+    /// (computed columns); json/yaml still get the API's response as-is.
+    pub fn list_mapped(
+        &mut self,
+        v: &Value,
+        cols: &[Col],
+        f: impl Fn(&Value) -> Value,
+    ) -> anyhow::Result<()> {
+        if self.format().is_structured() {
+            return self.raw(v);
+        }
+        let mapped: Vec<Value> = output::rows(v).into_iter().map(f).collect();
+        self.list(&Value::Array(mapped), cols)
     }
 
     /// Print one object as `label: value` lines, or the raw JSON/YAML.

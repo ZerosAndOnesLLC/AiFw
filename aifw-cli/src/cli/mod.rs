@@ -1,6 +1,7 @@
 //! CLI plumbing shared by every command: flags, config/credentials,
 //! connection resolution, output, prompts and exit codes.
 
+pub mod body;
 pub mod config;
 pub mod connect;
 pub mod ctx;

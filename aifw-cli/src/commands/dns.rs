@@ -1,76 +1,99 @@
-//! `aifw dns …`.
+//! `aifw dns …` — upstream DNS servers the resolver forwards to, and the
+//! resolver's backend probe (via the API).
 
-use aifw_core::Database;
-use std::path::Path;
+use clap::Subcommand;
+use serde_json::json;
 
-// ============================================================
-// DNS
-// ============================================================
+use crate::cli::Ctx;
+use crate::cli::exit::CliError;
 
-pub async fn dns_list() -> anyhow::Result<()> {
-    let content = std::fs::read_to_string("/etc/resolv.conf").unwrap_or_default();
-    let servers: Vec<&str> = content
-        .lines()
-        .filter_map(|l| l.strip_prefix("nameserver").map(|s| s.trim()))
-        .collect();
+#[derive(Debug, Subcommand)]
+pub enum DnsCmd {
+    /// List upstream DNS servers
+    #[command(visible_alias = "ls")]
+    List,
+    /// Replace the upstream DNS servers (comma-separated)
+    Set { servers: String },
+    /// Resolver health probe (switches backends when the active one fails)
+    Probe {
+        #[arg(value_parser = ["on", "off", "status"])]
+        state: String,
+    },
+    /// Resolver status (backend, listeners, last switch)
+    Status,
+    /// Write the resolver config and reload it
+    Apply,
+}
 
-    if servers.is_empty() {
-        println!("No DNS servers configured.");
-    } else {
-        println!("DNS Servers:");
-        for s in &servers {
-            println!("  {}", s);
+pub async fn run(ctx: &mut Ctx, cmd: DnsCmd) -> anyhow::Result<()> {
+    let client = ctx.client()?;
+    match cmd {
+        DnsCmd::List => {
+            let v = client.get("/dns").await?;
+            if ctx.format().is_structured() {
+                return ctx.raw(&v);
+            }
+            let servers = crate::cli::output::rows(&v);
+            if servers.is_empty() {
+                ctx.io.eprintln("No upstream DNS servers configured.");
+            }
+            for s in servers {
+                ctx.io.println(s.as_str().unwrap_or_default());
+            }
+            Ok(())
+        }
+        DnsCmd::Set { servers } => {
+            let list: Vec<String> = servers
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect();
+            if list.is_empty() {
+                return Err(CliError::Usage(
+                    "give at least one server, e.g. 1.1.1.1,9.9.9.9".into(),
+                )
+                .into());
+            }
+            let v = client.put("/dns", &json!({ "servers": list })).await?;
+            ctx.message(&v, "DNS servers updated")?;
+            if !ctx.format().is_structured() {
+                ctx.io
+                    .eprintln("Run `aifw dns apply` to reload the resolver.");
+            }
+            Ok(())
+        }
+        DnsCmd::Probe { state } => {
+            let mut cfg = client.get("/dns/resolver/config").await?;
+            let cfg_obj = crate::cli::output::item(&cfg).clone();
+            cfg = cfg_obj;
+            if state == "status" {
+                let on = cfg["probe_enabled"].as_bool().unwrap_or(true);
+                if ctx.format().is_structured() {
+                    return ctx.raw(&json!({ "probe_enabled": on }));
+                }
+                ctx.io.println(&format!(
+                    "Resolver probe: {}",
+                    if on { "on" } else { "off" }
+                ));
+                return Ok(());
+            }
+            cfg["probe_enabled"] = json!(state == "on");
+            let v = client.put("/dns/resolver/config", &cfg).await?;
+            ctx.message(&v, &format!("Resolver probe {state}"))?;
+            if !ctx.format().is_structured() {
+                ctx.io
+                    .eprintln("Takes effect on the next `aifw dns apply` (or resolver restart).");
+            }
+            Ok(())
+        }
+        DnsCmd::Status => {
+            let v = client.get("/dns/resolver/status").await?;
+            ctx.raw(&v)
+        }
+        DnsCmd::Apply => {
+            let v = client.post_empty("/dns/resolver/apply").await?;
+            ctx.message(&v, "Resolver config applied")
         }
     }
-    Ok(())
-}
-
-pub async fn dns_set(servers_str: &str) -> anyhow::Result<()> {
-    let servers: Vec<&str> = servers_str.split(',').map(|s| s.trim()).collect();
-    let content: String = servers
-        .iter()
-        .map(|s| format!("nameserver {s}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    std::fs::write("/etc/resolv.conf", &content)?;
-    println!("DNS servers updated:");
-    for s in &servers {
-        println!("  {}", s);
-    }
-    Ok(())
-}
-
-pub async fn dns_probe_set(db_path: &Path, enabled: bool) -> anyhow::Result<()> {
-    let db = Database::new(db_path).await?;
-    sqlx::query(
-        "INSERT OR REPLACE INTO dns_resolver_config (key, value) VALUES ('probe_enabled', ?1)",
-    )
-    .bind(if enabled { "true" } else { "false" })
-    .execute(db.pool())
-    .await?;
-    println!(
-        "DNS resolver probe: {}",
-        if enabled {
-            "ENABLED (auto-rollback on :53 silence)"
-        } else {
-            "DISABLED (trust service restart exit code only)"
-        }
-    );
-    println!("Takes effect on the next apply/start/restart of the resolver.");
-    Ok(())
-}
-
-pub async fn dns_probe_status(db_path: &Path) -> anyhow::Result<()> {
-    let db = Database::new(db_path).await?;
-    let row = sqlx::query_as::<_, (String,)>(
-        "SELECT value FROM dns_resolver_config WHERE key = 'probe_enabled'",
-    )
-    .fetch_optional(db.pool())
-    .await?;
-    let enabled = row.map(|(v,)| v == "true").unwrap_or(true); // default ON
-    println!(
-        "DNS resolver probe: {}",
-        if enabled { "enabled" } else { "disabled" }
-    );
-    Ok(())
 }

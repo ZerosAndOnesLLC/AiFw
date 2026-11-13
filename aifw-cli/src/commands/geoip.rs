@@ -1,112 +1,105 @@
-//! `aifw geoip …`. Rule commands write the database directly; the running
-//! API re-applies the anchor within a minute. Database commands
-//! (`database`, `refresh`, `import`) ask the API, which owns the loaded
-//! index, and need a token (`AIFW_TOKEN`).
+//! `aifw geoip …` — country rules and the GeoLite2 database (via the API;
+//! rule writes are applied to pf immediately by the API).
 
-use aifw_common::{CountryCode, GeoIpAction, GeoIpRule};
-use aifw_core::{Database, GeoIpEngine};
-use serde_json::{Value, json};
-use std::path::Path;
-use std::sync::Arc;
-use uuid::Uuid;
+use std::path::PathBuf;
+use std::time::Duration;
 
-use super::plugins::api;
+use aifw_client::{Upload, UploadFile};
+use clap::Subcommand;
+use serde_json::{Map, Value, json};
 
-const APPLY_NOTE: &str = "The running aifw-api applies the change within a minute.";
+use crate::cli::body::Fields;
+use crate::cli::exit::CliError;
+use crate::cli::{Ctx, Format, col, prompt, wide};
 
-// --- Geo-IP commands ---
-
-async fn create_geoip_engine(db_path: &Path) -> anyhow::Result<GeoIpEngine> {
-    let db = Database::new(db_path).await?;
-    let pf = Arc::from(aifw_pf::create_backend());
-    let engine = GeoIpEngine::new(db.pool().clone(), pf);
-    engine.migrate().await?;
-    Ok(engine)
+#[derive(Debug, Subcommand)]
+pub enum GeoipCmd {
+    /// Add a country rule
+    Add {
+        /// ISO country code, e.g. CN
+        #[arg(long)]
+        country: String,
+        /// block or allow
+        #[arg(long)]
+        action: String,
+        #[arg(long)]
+        label: Option<String>,
+        /// Create it disabled
+        #[arg(long)]
+        disabled: bool,
+    },
+    /// Change a country rule
+    Edit {
+        id: String,
+        #[arg(long)]
+        country: Option<String>,
+        #[arg(long)]
+        action: Option<String>,
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// Delete a country rule
+    #[command(visible_alias = "rm")]
+    Remove {
+        id: String,
+        #[arg(short, long)]
+        yes: bool,
+    },
+    /// Enable a country rule
+    Enable { id: String },
+    /// Disable a country rule
+    Disable { id: String },
+    /// List country rules (and the database status)
+    #[command(visible_alias = "ls")]
+    List {
+        #[arg(long, hide = true)]
+        json: bool,
+    },
+    /// Which country an IP belongs to
+    Lookup { ip: String },
+    /// Show or configure the GeoLite2 database source and refresh schedule
+    #[command(after_help = "\
+EXAMPLES:
+    aifw geoip database                                  # status, schedule, last refresh
+    aifw geoip database --account-id 123456              # MaxMind account ID (pairs with the key)
+    printf '%s' \"$KEY\" | aifw geoip database --license-key-stdin
+    aifw geoip database --update-interval-hours 168      # weekly (0 turns auto-refresh off)
+    aifw geoip database --clear-license-key")]
+    Database {
+        /// Read the MaxMind license key from stdin
+        #[arg(long)]
+        license_key_stdin: bool,
+        /// Remove the stored license key
+        #[arg(long, conflicts_with = "license_key_stdin")]
+        clear_license_key: bool,
+        /// MaxMind account ID ("" clears it)
+        #[arg(long, value_name = "ID")]
+        account_id: Option<String>,
+        /// Hours between automatic refreshes (0 = off)
+        #[arg(long)]
+        update_interval_hours: Option<u32>,
+        #[arg(long, hide = true)]
+        json: bool,
+    },
+    /// Download the database now
+    Refresh,
+    /// Upload a GeoLite2 Country CSV release (the zip, or its .csv files)
+    Import {
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+    },
 }
 
-pub async fn geoip_add(
-    db_path: &Path,
-    country: &str,
-    action: &str,
-    label: Option<&str>,
-) -> anyhow::Result<()> {
-    let engine = create_geoip_engine(db_path).await?;
-    let mut rule = GeoIpRule::new(CountryCode::new(country)?, GeoIpAction::parse(action)?);
-    rule.label = label.map(String::from);
-    let rule = engine.add(rule).await?;
-    println!("Added geo-ip rule {}", rule.id);
-    println!("  Country: {}", rule.country);
-    println!("  Action:  {}", rule.action);
-    println!("  Table:   <{}>", rule.table_name());
-    println!("  pf:      {}", rule.to_pf_rule());
-    println!("{APPLY_NOTE}");
-    Ok(())
-}
-
-pub async fn geoip_remove(db_path: &Path, id: &str) -> anyhow::Result<()> {
-    let engine = create_geoip_engine(db_path).await?;
-    let uuid = Uuid::parse_str(id)?;
-    engine.delete(uuid).await?;
-    println!("Removed geo-ip rule {id}. {APPLY_NOTE}");
-    Ok(())
-}
-
-pub async fn geoip_list(db_path: &Path, json: bool) -> anyhow::Result<()> {
-    let engine = create_geoip_engine(db_path).await?;
-    let rules = engine.list().await?;
-
-    if json {
-        println!("{}", serde_json::to_string_pretty(&rules)?);
-        return Ok(());
-    }
-
-    if rules.is_empty() {
-        println!("No geo-ip rules configured");
-        return Ok(());
-    }
-
-    // The index lives in the API process; this process's engine is empty.
-    let live = api(reqwest::Method::GET, "/api/v1/geoip", None).await.ok();
-    let cidrs_of = |country: &str| -> Option<i64> {
-        live.as_ref()?["data"]
-            .as_array()?
-            .iter()
-            .find(|r| r["country"] == country)?["cidr_count"]
-            .as_i64()
-    };
-
-    println!(
-        "{:<38} {:<8} {:<8} {:<20} {:>8} LABEL",
-        "ID", "COUNTRY", "ACTION", "TABLE", "CIDRS"
-    );
-    println!("{}", "-".repeat(85));
-
-    for r in &rules {
-        let status = match r.status {
-            aifw_common::GeoIpRuleStatus::Active => "",
-            aifw_common::GeoIpRuleStatus::Disabled => " [disabled]",
-        };
-        println!(
-            "{:<38} {:<8} {:<8} {:<20} {:>8} {}{}",
-            r.id,
-            r.country,
-            r.action,
-            r.table_name(),
-            cidrs_of(&r.country.0)
-                .map(|n| n.to_string())
-                .unwrap_or_else(|| "-".into()),
-            r.label.as_deref().unwrap_or(""),
-            status,
-        );
-    }
-
-    println!("\n{} rule(s)", rules.len());
-    match api(reqwest::Method::GET, "/api/v1/geoip/database", None).await {
-        Ok(st) => println!("{}", database_line(&st)),
-        Err(e) => println!("Database status unavailable: {e}."),
-    }
-    Ok(())
-}
+const COLS: &[crate::cli::output::Col] = &[
+    col("ID", "/id"),
+    col("COUNTRY", "/country"),
+    col("ACTION", "/action"),
+    col("STATUS", "/status"),
+    col("CIDRS", "/cidr_count"),
+    col("LABEL", "/label"),
+    wide("TABLE", "/table"),
+    wide("UPDATED", "/updated_at"),
+];
 
 fn database_line(st: &Value) -> String {
     if st["loaded"].as_bool() != Some(true) {
@@ -121,162 +114,247 @@ fn database_line(st: &Value) -> String {
     )
 }
 
-/// Database status, settings, and the refresh schedule.
-pub async fn geoip_database(
-    license_key_stdin: bool,
-    clear_license_key: bool,
-    account_id: Option<&str>,
-    update_interval_hours: Option<u32>,
-    json_out: bool,
-) -> anyhow::Result<()> {
-    let mut body = serde_json::Map::new();
-    if let Some(a) = account_id {
-        body.insert(
-            "account_id".into(),
-            if a.is_empty() {
-                Value::Null
-            } else {
-                Value::String(a.to_string())
-            },
-        );
+fn print_database(ctx: &mut Ctx, st: &Value) -> anyhow::Result<()> {
+    if ctx.format().is_structured() {
+        return ctx.raw(st);
     }
-    if license_key_stdin {
-        let mut line = String::new();
-        std::io::stdin().read_line(&mut line)?;
-        let key = line.trim();
-        if key.is_empty() {
-            anyhow::bail!("--license-key-stdin: nothing was read from stdin");
-        }
-        body.insert("license_key".into(), Value::String(key.to_string()));
-    } else if clear_license_key {
-        body.insert("license_key".into(), Value::Null);
-    }
-    if let Some(h) = update_interval_hours {
-        body.insert("update_interval_hours".into(), json!(h));
-    }
-    let st = if body.is_empty() {
-        api(reqwest::Method::GET, "/api/v1/geoip/database", None).await
-    } else {
-        api(
-            reqwest::Method::PUT,
-            "/api/v1/geoip/database",
-            Some(&Value::Object(body)),
-        )
-        .await
-    }
-    .map_err(|e| anyhow::anyhow!("{e}"))?;
-    if json_out {
-        println!("{}", serde_json::to_string_pretty(&st)?);
-        return Ok(());
-    }
-    println!("{}", database_line(&st));
-    println!(
-        "  Directory:      {}",
-        st["db_path"].as_str().unwrap_or("?")
-    );
-    println!(
-        "  Account ID:     {}",
-        st["account_id"].as_str().unwrap_or("not set")
-    );
-    println!(
-        "  License key:    {}",
-        if st["has_license_key"] == true {
-            "set"
-        } else {
-            "not set"
-        }
-    );
+    ctx.io.println(&database_line(st));
     let hours = st["update_interval_hours"].as_u64().unwrap_or(0);
-    println!(
-        "  Auto-refresh:   {}",
-        if hours == 0 {
-            "off".to_string()
-        } else {
-            format!("every {hours} h")
-        }
+    let mut v = st.clone();
+    v["_key"] = json!(if st["has_license_key"] == true {
+        "set"
+    } else {
+        "not set"
+    });
+    v["_refresh"] = json!(if hours == 0 {
+        "off".to_string()
+    } else {
+        format!("every {hours} h")
+    });
+    let d = crate::cli::output::detail(
+        &v,
+        &[
+            ("  Directory", "/db_path"),
+            ("  Account ID", "/account_id"),
+            ("  License key", "/_key"),
+            ("  Auto-refresh", "/_refresh"),
+            ("  Next refresh", "/next_refresh"),
+            ("  Last attempt", "/last_refresh_attempt"),
+            ("  Last error", "/last_error"),
+        ],
     );
-    if let Some(n) = st["next_refresh"].as_str() {
-        println!("  Next refresh:   {n}");
-    }
-    if let Some(a) = st["last_refresh_attempt"].as_str() {
-        println!("  Last attempt:   {a}");
-    }
-    if let Some(e) = st["last_error"].as_str() {
-        println!("  Last error:     {e}");
-    }
+    ctx.io.println(&d);
     Ok(())
 }
 
-/// Download the GeoLite2 release from MaxMind now.
-pub async fn geoip_refresh() -> anyhow::Result<()> {
-    let v = api(
-        reqwest::Method::POST,
-        "/api/v1/geoip/database/refresh",
-        Some(&Value::Null),
-    )
-    .await
-    .map_err(|e| anyhow::anyhow!("refresh failed: {e}"))?;
-    println!("Downloaded and applied: {} networks.", v["cidrs"]);
-    println!("{}", database_line(&v["status"]));
-    Ok(())
+async fn find(client: &aifw_client::Client, id: &str) -> anyhow::Result<Value> {
+    let all = client.get("/geoip").await?;
+    crate::cli::output::rows(&all)
+        .into_iter()
+        .find(|r| r["id"] == json!(id))
+        .cloned()
+        .ok_or_else(|| aifw_client::ClientError::NotFound(format!("geoip rule {id}")).into())
 }
 
-/// Upload a GeoLite2 Country CSV zip (or a single .csv) to the API.
-pub async fn geoip_import(files: &[std::path::PathBuf]) -> anyhow::Result<()> {
-    use super::cluster::{AIFW_API_BASE, read_api_token};
-    if files.is_empty() {
-        anyhow::bail!("pass the GeoLite2 Country CSV zip, or the .csv files");
-    }
-    let mut form = reqwest::multipart::Form::new();
-    for f in files {
-        let name = f
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or_else(|| anyhow::anyhow!("{}: not a valid file name", f.display()))?
-            .to_string();
-        let bytes = std::fs::read(f).map_err(|e| anyhow::anyhow!("{}: {e}", f.display()))?;
-        form = form.part(
-            name.clone(),
-            reqwest::multipart::Part::bytes(bytes).file_name(name),
-        );
-    }
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
-        .build()?;
-    let mut req = client.post(format!("{AIFW_API_BASE}/api/v1/geoip/database/upload"));
-    let token = read_api_token();
-    if !token.is_empty() {
-        req = req.header("Authorization", format!("Bearer {token}"));
-    }
-    let resp = req.multipart(form).send().await?;
-    let status = resp.status();
-    let v: Value = resp.json().await.unwrap_or(Value::Null);
-    if !status.is_success() {
-        anyhow::bail!(
-            "import failed: {}",
-            v["message"]
-                .as_str()
-                .map(str::to_string)
-                .unwrap_or_else(|| format!("HTTP {status}"))
-        );
-    }
-    println!("Imported and applied: {} networks.", v["cidrs"]);
-    println!("{}", database_line(&v["status"]));
-    Ok(())
+fn to_request(r: &Value) -> Value {
+    json!({
+        "country_code": r["country"],
+        "action": r["action"],
+        "status": r["status"],
+        "label": r["label"],
+    })
 }
 
-pub async fn geoip_lookup(db_path: &Path, ip_str: &str) -> anyhow::Result<()> {
-    let engine = create_geoip_engine(db_path).await?;
-    let ip: std::net::IpAddr = ip_str.parse()?;
-    let result = engine.lookup(ip).await;
-
-    println!("IP:      {}", result.ip);
-    match result.country {
-        Some(cc) => {
-            println!("Country: {cc}");
-            println!("Network: {}", result.network.unwrap_or_default());
+pub async fn run(ctx: &mut Ctx, cmd: GeoipCmd) -> anyhow::Result<()> {
+    let client = ctx.client()?;
+    match cmd {
+        GeoipCmd::List { json } => {
+            if json {
+                ctx.force_format(Format::Json);
+            }
+            let v = client.get("/geoip").await?;
+            ctx.list(&v, COLS)?;
+            if !ctx.format().is_structured()
+                && let Ok(st) = client.get("/geoip/database").await
+            {
+                ctx.io.println(&database_line(&st));
+            }
+            Ok(())
         }
-        None => println!("Country: (not found — geo-ip database may not be loaded)"),
+        GeoipCmd::Add {
+            country,
+            action,
+            label,
+            disabled,
+        } => {
+            let body = Fields::new()
+                .set("country_code", country.to_ascii_uppercase())
+                .set("action", action)
+                .opt("label", label)
+                .flag("status", disabled, "disabled")
+                .into_value();
+            let v = client.post("/geoip", &body).await?;
+            if ctx.format().is_structured() {
+                return ctx.raw(&v);
+            }
+            let r = crate::cli::output::item(&v);
+            ctx.io.println(&format!(
+                "Added geoip rule {} ({} {})",
+                r["id"].as_str().unwrap_or("?"),
+                r["action"].as_str().unwrap_or("?"),
+                r["country"].as_str().unwrap_or("?")
+            ));
+            Ok(())
+        }
+        GeoipCmd::Edit {
+            id,
+            country,
+            action,
+            label,
+        } => {
+            let current = to_request(&find(&client, &id).await?);
+            let flags = Fields::new()
+                .opt("country_code", country.map(|c| c.to_ascii_uppercase()))
+                .opt("action", action)
+                .opt("label", label);
+            let body = crate::cli::body::for_update(&mut ctx.io, current, None, flags)?;
+            let v = client.put(&format!("/geoip/{id}"), &body).await?;
+            ctx.message(&v, &format!("Updated geoip rule {id}"))
+        }
+        GeoipCmd::Enable { id } => set_status(ctx, &client, &id, "active").await,
+        GeoipCmd::Disable { id } => set_status(ctx, &client, &id, "disabled").await,
+        GeoipCmd::Remove { id, yes } => {
+            ctx.confirm(&format!("Delete geoip rule {id}?"), yes)?;
+            let v = client.delete(&format!("/geoip/{id}")).await?;
+            ctx.message(&v, &format!("Removed geoip rule {id}"))
+        }
+        GeoipCmd::Lookup { ip } => {
+            let v = client.get(&format!("/geoip/lookup/{ip}")).await?;
+            if ctx.format().is_structured() {
+                return ctx.raw(&v);
+            }
+            let line = match v["country"].as_str() {
+                Some(c) => format!("{ip}: {c} ({})", v["network"].as_str().unwrap_or("?")),
+                None => format!("{ip}: no country match"),
+            };
+            ctx.io.println(&line);
+            Ok(())
+        }
+        GeoipCmd::Database {
+            license_key_stdin,
+            clear_license_key,
+            account_id,
+            update_interval_hours,
+            json,
+        } => {
+            if json {
+                ctx.force_format(Format::Json);
+            }
+            let mut body = Map::new();
+            if let Some(a) = account_id {
+                body.insert(
+                    "account_id".into(),
+                    if a.is_empty() { Value::Null } else { json!(a) },
+                );
+            }
+            if license_key_stdin {
+                let key = prompt::read_line_raw(&mut ctx.io)?.trim().to_string();
+                if key.is_empty() {
+                    return Err(CliError::Usage(
+                        "--license-key-stdin: nothing was read from stdin".into(),
+                    )
+                    .into());
+                }
+                body.insert("license_key".into(), json!(key));
+            } else if clear_license_key {
+                body.insert("license_key".into(), Value::Null);
+            }
+            if let Some(h) = update_interval_hours {
+                body.insert("update_interval_hours".into(), json!(h));
+            }
+            let st = if body.is_empty() {
+                client.get("/geoip/database").await?
+            } else {
+                client.put("/geoip/database", &Value::Object(body)).await?
+            };
+            print_database(ctx, &st)
+        }
+        GeoipCmd::Refresh => {
+            let timeout = ctx.slow_timeout(Duration::from_secs(600));
+            let v = client
+                .request_with_timeout(
+                    reqwest::Method::POST,
+                    "/geoip/database/refresh",
+                    None,
+                    timeout,
+                )
+                .await?;
+            if ctx.format().is_structured() {
+                return ctx.raw(&v);
+            }
+            ctx.io
+                .println(&format!("Refreshed: {} networks.", v["cidrs"]));
+            ctx.io.println(&database_line(&v["status"]));
+            Ok(())
+        }
+        GeoipCmd::Import { files } => {
+            let mut parts = Vec::new();
+            for f in &files {
+                let name = f
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .ok_or_else(|| {
+                        CliError::Usage(format!("{}: not a valid file name", f.display()))
+                    })?
+                    .to_string();
+                let bytes = std::fs::read(f)
+                    .map_err(|e| CliError::Usage(format!("{}: {e}", f.display())))?;
+                parts.push(UploadFile {
+                    field: name.clone(),
+                    file_name: name,
+                    bytes,
+                });
+            }
+            let timeout = ctx.slow_timeout(Duration::from_secs(600));
+            let v = client
+                .upload(
+                    "/geoip/database/upload",
+                    Upload {
+                        files: parts,
+                        fields: vec![],
+                    },
+                    timeout,
+                )
+                .await?;
+            if ctx.format().is_structured() {
+                return ctx.raw(&v);
+            }
+            ctx.io
+                .println(&format!("Imported and applied: {} networks.", v["cidrs"]));
+            ctx.io.println(&database_line(&v["status"]));
+            Ok(())
+        }
     }
-    Ok(())
+}
+
+async fn set_status(
+    ctx: &mut Ctx,
+    client: &aifw_client::Client,
+    id: &str,
+    status: &str,
+) -> anyhow::Result<()> {
+    let mut body = to_request(&find(client, id).await?);
+    body["status"] = json!(status);
+    let v = client.put(&format!("/geoip/{id}"), &body).await?;
+    ctx.message(
+        &v,
+        &format!(
+            "geoip rule {id} {}",
+            if status == "active" {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        ),
+    )
 }

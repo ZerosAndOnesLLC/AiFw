@@ -332,9 +332,18 @@ async fn multipart_upload() {
         .upload(
             "/upload",
             Upload {
-                field: "file".into(),
-                file_name: "db.zip".into(),
-                bytes: b"hello".to_vec(),
+                files: vec![
+                    UploadFile {
+                        field: "file".into(),
+                        file_name: "db.zip".into(),
+                        bytes: b"hello".to_vec(),
+                    },
+                    UploadFile {
+                        field: "second".into(),
+                        file_name: "b.csv".into(),
+                        bytes: b"x".to_vec(),
+                    },
+                ],
                 fields: vec![("kind".into(), "geoip".into())],
             },
             Duration::from_secs(5),
@@ -344,6 +353,7 @@ async fn multipart_upload() {
     assert_eq!(v["file"]["file"], "db.zip");
     assert_eq!(v["file"]["len"], 5);
     assert_eq!(v["kind"]["text"], "geoip");
+    assert_eq!(v["second"]["file"], "b.csv");
 }
 
 #[tokio::test]

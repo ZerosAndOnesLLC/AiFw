@@ -149,12 +149,16 @@ pub enum LoginOutcome {
     TotpRequired,
 }
 
-/// A file part for a multipart upload.
-pub struct Upload {
+/// One file part of a multipart upload.
+pub struct UploadFile {
     pub field: String,
     pub file_name: String,
     pub bytes: Vec<u8>,
-    /// Extra text fields sent alongside the file.
+}
+
+/// A multipart upload: one or more files plus text fields.
+pub struct Upload {
+    pub files: Vec<UploadFile>,
     pub fields: Vec<(String, String)>,
 }
 
@@ -285,10 +289,12 @@ impl Client {
         for (k, v) in upload.fields {
             form = form.text(k, v);
         }
-        form = form.part(
-            upload.field,
-            reqwest::multipart::Part::bytes(upload.bytes).file_name(upload.file_name),
-        );
+        for f in upload.files {
+            form = form.part(
+                f.field,
+                reqwest::multipart::Part::bytes(f.bytes).file_name(f.file_name),
+            );
+        }
         let mut req = self.http.post(&url).multipart(form).timeout(timeout);
         if let Some(h) = self.auth.lock().await.header() {
             req = req.header(reqwest::header::AUTHORIZATION, h);

@@ -70,12 +70,12 @@ enum Commands {
     /// Manage firewall rules
     Rules {
         #[command(subcommand)]
-        action: RulesAction,
+        action: commands::rules::RulesCmd,
     },
     /// Manage NAT rules
     Nat {
         #[command(subcommand)]
-        action: NatAction,
+        action: commands::nat::NatCmd,
     },
     /// Manage the IDS engine (alerts, retention)
     Ids {
@@ -100,9 +100,9 @@ enum Commands {
     /// Manage traffic queues
     Queue {
         #[command(subcommand)]
-        action: QueueAction,
+        action: commands::shaping::QueueCmd,
     },
-    /// Manage rate limiting rules
+    /// Manage rate limiting rules (local: root on the appliance; no API yet)
     Ratelimit {
         #[command(subcommand)]
         action: RateLimitAction,
@@ -110,7 +110,7 @@ enum Commands {
     /// Manage Geo-IP filtering
     Geoip {
         #[command(subcommand)]
-        action: GeoIpCmd,
+        action: commands::geoip::GeoipCmd,
     },
     /// Manage VPN tunnels
     Vpn {
@@ -125,12 +125,12 @@ enum Commands {
     /// Manage static routes
     Routes {
         #[command(subcommand)]
-        action: RoutesAction,
+        action: commands::routes::RoutesCmd,
     },
     /// Manage DNS nameservers
     Dns {
         #[command(subcommand)]
-        action: DnsAction,
+        action: commands::dns::DnsCmd,
     },
     /// Manage DHCP server
     Dhcp {
@@ -140,7 +140,7 @@ enum Commands {
     /// Manage users
     Users {
         #[command(subcommand)]
-        action: UsersAction,
+        action: commands::users::UsersCmd,
     },
     /// Manage the reverse proxy (TrafficCop)
     ReverseProxy {
@@ -156,9 +156,14 @@ enum Commands {
     Interfaces,
     /// Show firewall status
     Status,
-    /// Reload rules from database and apply to pf
-    Reload,
-    /// Reconcile kernel pf state and rc.conf against db/pf.conf.aifw.
+    /// Apply staged changes and re-apply queues (via the API)
+    Reload {
+        /// Load straight from the database into pf, without the API
+        /// (break-glass; root on the appliance)
+        #[arg(long)]
+        local: bool,
+    },
+    /// (Local, root) Reconcile kernel pf state and rc.conf against db/pf.conf.aifw.
     /// Reloads pf.conf.aifw if anchor hooks are missing and fixes rc.conf
     /// DNS backend flags if they disagree with the db.
     Reconcile,
@@ -515,66 +520,6 @@ enum ConfigAction {
 }
 
 #[derive(Subcommand)]
-enum GeoIpCmd {
-    /// Add a country block/allow rule
-    Add {
-        /// Country code (ISO 3166-1 alpha-2, e.g., CN, RU, US)
-        #[arg(long)]
-        country: String,
-        /// Action: block or allow
-        #[arg(long)]
-        action: String,
-        /// Rule label
-        #[arg(long)]
-        label: Option<String>,
-    },
-    /// Remove a geo-ip rule by ID
-    Remove { id: String },
-    /// List all geo-ip rules
-    List {
-        #[arg(long)]
-        json: bool,
-    },
-    /// Lookup an IP address
-    Lookup {
-        /// IP address to look up
-        ip: String,
-    },
-    /// Show or configure the GeoLite2 database and its refresh schedule (asks the running API)
-    #[command(after_help = "\
-EXAMPLES:
-    aifw geoip database                                  # status, schedule, last refresh
-    aifw geoip database --account-id 123456              # MaxMind account ID (pairs with the key)
-    printf '%s' \"$KEY\" | aifw geoip database --license-key-stdin
-    aifw geoip database --update-interval-hours 168      # weekly (0 turns auto-refresh off)
-    aifw geoip database --clear-license-key")]
-    Database {
-        /// Read a MaxMind license key from stdin (first line) and store it sealed
-        #[arg(long)]
-        license_key_stdin: bool,
-        /// Remove the stored license key
-        #[arg(long, conflicts_with = "license_key_stdin")]
-        clear_license_key: bool,
-        /// MaxMind account ID (numeric); pass an empty string to clear
-        #[arg(long, value_name = "ID")]
-        account_id: Option<String>,
-        /// Hours between scheduled downloads; 0 disables
-        #[arg(long)]
-        update_interval_hours: Option<u32>,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// Download the GeoLite2 Country release from MaxMind now (needs a license key)
-    Refresh,
-    /// Import a GeoLite2 Country CSV release: the MaxMind zip, or the .csv files
-    Import {
-        /// GeoLite2-Country-CSV_*.zip, or GeoLite2-Country-Blocks-IPv4.csv [+ IPv6] + GeoLite2-Country-Locations-en.csv
-        files: Vec<PathBuf>,
-    },
-}
-
-#[derive(Subcommand)]
 enum VpnAction {
     /// Add a WireGuard tunnel
     WgAdd {
@@ -662,47 +607,6 @@ enum VpnAction {
 }
 
 #[derive(Subcommand)]
-enum QueueAction {
-    /// Add a traffic queue
-    Add {
-        /// Queue name
-        #[arg(long)]
-        name: String,
-
-        /// Network interface
-        #[arg(long)]
-        interface: String,
-
-        /// Queue type: codel, hfsc, priq
-        #[arg(long, name = "type", default_value = "codel")]
-        queue_type: String,
-
-        /// Bandwidth (e.g., 100Mb, 1Gb, 500Kb)
-        #[arg(long)]
-        bandwidth: String,
-
-        /// Traffic class: voip, interactive, default, bulk
-        #[arg(long, default_value = "default")]
-        class: String,
-
-        /// Bandwidth percentage of parent (1-100)
-        #[arg(long)]
-        pct: Option<u8>,
-
-        /// Mark as default queue
-        #[arg(long)]
-        default: bool,
-    },
-    /// Remove a queue by ID
-    Remove { id: String },
-    /// List all queues
-    List {
-        #[arg(long)]
-        json: bool,
-    },
-}
-
-#[derive(Subcommand)]
 enum RateLimitAction {
     /// Add a rate limit rule
     Add {
@@ -745,87 +649,6 @@ enum RateLimitAction {
         #[arg(long)]
         json: bool,
     },
-}
-
-#[derive(Subcommand)]
-enum RoutesAction {
-    /// Add a static route
-    Add {
-        /// Destination network (CIDR, e.g., 10.0.0.0/8 or "default")
-        #[arg(long)]
-        dest: String,
-        /// Gateway IP
-        #[arg(long)]
-        gateway: String,
-        /// Network interface (optional)
-        #[arg(long)]
-        interface: Option<String>,
-        /// Route metric
-        #[arg(long, default_value = "0")]
-        metric: i32,
-        /// Description
-        #[arg(long)]
-        desc: Option<String>,
-    },
-    /// Remove a static route by ID
-    Remove { id: String },
-    /// List all static routes
-    List {
-        #[arg(long)]
-        json: bool,
-    },
-    /// Show system routing table (netstat -rn)
-    System,
-}
-
-#[derive(Subcommand)]
-enum DnsAction {
-    /// Show current DNS servers
-    List,
-    /// Set DNS servers (replaces all)
-    Set {
-        /// DNS servers (comma-separated)
-        servers: String,
-    },
-    /// Toggle the post-switch DNS probe (auto-rollback on :53 silence)
-    Probe {
-        #[command(subcommand)]
-        action: ProbeAction,
-    },
-}
-
-#[derive(Subcommand)]
-enum ProbeAction {
-    /// Enable probe + auto-rollback on backend switch
-    On,
-    /// Disable probe — trust exit code of `service <backend> restart`
-    Off,
-    /// Show current probe_enabled value
-    Status,
-}
-
-#[derive(Subcommand)]
-enum UsersAction {
-    /// List all users
-    List {
-        #[arg(long)]
-        json: bool,
-    },
-    /// Add a new user
-    Add {
-        #[arg(long)]
-        username: String,
-        #[arg(long)]
-        password: String,
-        #[arg(long, default_value = "admin")]
-        role: String,
-    },
-    /// Remove a user by ID
-    Remove { id: String },
-    /// Disable a user
-    Disable { id: String },
-    /// Enable a user
-    Enable { id: String },
 }
 
 #[derive(Subcommand)]
@@ -1133,178 +956,6 @@ EXAMPLES:
     },
 }
 
-// `Add` carries a dozen optional strings; same rationale as `IdsAction`.
-#[allow(clippy::large_enum_variant)]
-#[derive(Subcommand)]
-enum NatAction {
-    /// Add a NAT rule
-    #[command(after_help = "\
-EXAMPLES:
-    # Source NAT a LAN behind a WAN address
-    aifw nat add --nat-type snat --interface em0 --src 192.168.1.0/24 --redirect 203.0.113.1
-
-    # Port-forward WAN :80 to an internal host
-    aifw nat add --nat-type dnat --interface em0 --dst-port 80 --redirect 10.0.0.5 --redirect-port 8080
-
-    # NAT64: IPv6-only clients reach IPv4 hosts (pf af-to, FreeBSD 15+).
-    # --dst defaults to the well-known prefix 64:ff9b::/96; --redirect is
-    # the IPv4 the firewall sources translated traffic from.
-    aifw nat add --nat-type nat64 --interface em1 --redirect 203.0.113.1
-
-    # NAT46: IPv4-only clients reach an IPv6 service. The v6 server must
-    # hold the RFC 6052 embedding of --dst in --redirect's /96 subnet
-    # (print it with: aifw nat embed <redirect> <dst>).
-    aifw nat add --nat-type nat46 --interface em1 --dst 10.99.1.1 --redirect 2001:db8:2::1
-
-    # Masquerade keeping the source port (SIP/VPN friendly)
-    aifw nat add --nat-type masquerade --interface em0 --src 192.168.1.0/24 --static-port
-
-    # NAT bypass: don't NAT LAN → site-to-site VPN subnet (order before the masquerade rule)
-    aifw nat add --nat-type nonat --interface em0 --src 192.168.1.0/24 --dst 10.50.0.0/16")]
-    Add {
-        /// NAT type: snat, dnat, masquerade, binat, nat64 (IPv6→IPv4 af-to),
-        /// nat46 (IPv4→IPv6 af-to), nonat (bypass — exempt matching traffic
-        /// from later NAT rules; no --redirect)
-        #[arg(long, name = "type")]
-        nat_type: String,
-
-        /// Network interface (required)
-        #[arg(long)]
-        interface: String,
-
-        /// Protocol: tcp, udp, icmp, any (icmp auto-normalizes to icmp6 on nat64)
-        #[arg(long, default_value = "any")]
-        proto: String,
-
-        /// Source address
-        #[arg(long, default_value = "any")]
-        src: String,
-
-        /// Source port
-        #[arg(long)]
-        src_port: Option<String>,
-
-        /// Destination address. nat64: the /96 translation prefix
-        /// (defaults to 64:ff9b::/96). nat46: the IPv4 destination (required).
-        #[arg(long)]
-        dst: Option<String>,
-
-        /// Destination port
-        #[arg(long)]
-        dst_port: Option<String>,
-
-        /// Redirect target. nat64/nat46: the translation source address the
-        /// firewall owns in the translated family (IPv4 for nat64, IPv6 for
-        /// nat46). Not used for masquerade / nonat (defaults to any).
-        #[arg(long)]
-        redirect: Option<String>,
-
-        /// Redirect target port (not valid for nat64/nat46)
-        #[arg(long)]
-        redirect_port: Option<String>,
-
-        /// Rule label
-        #[arg(long)]
-        label: Option<String>,
-
-        /// Keep the original source port (pf static-port). snat/masquerade
-        /// only — needed by SIP, some VPNs and games that break when the
-        /// source port is rewritten.
-        #[arg(long)]
-        static_port: bool,
-
-        /// nat46/nat64 only: explicit translated destination (pf `af-to …
-        /// to <addr>`), e.g. the IPv6 address a nat46 target server really
-        /// listens on. Omit to use the RFC 6052 embedded address.
-        #[arg(long, value_name = "ADDR")]
-        af_to_dst: Option<String>,
-    },
-    /// Remove a NAT rule by ID
-    Remove {
-        /// Rule UUID
-        id: String,
-    },
-    /// List all NAT rules
-    List {
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// Print the RFC 6052 NAT64 address embedding an IPv4 host in a /96 prefix
-    #[command(after_help = "\
-EXAMPLES:
-    aifw nat embed 64:ff9b::/96 8.8.8.8        # -> 64:ff9b::808:808
-    aifw nat embed 2001:db8:2::1 10.99.1.1     # -> 2001:db8:2::a63:101")]
-    Embed {
-        /// IPv6 /96 prefix (or an address whose /96 subnet is used)
-        prefix: String,
-
-        /// IPv4 address to embed
-        ipv4: String,
-    },
-}
-
-#[derive(Subcommand)]
-enum RulesAction {
-    /// Add a new rule
-    Add {
-        /// Action: pass, block, block-drop, block-return
-        #[arg(long)]
-        action: String,
-
-        /// Direction: in, out, any
-        #[arg(long, default_value = "any")]
-        direction: String,
-
-        /// Protocol: tcp, udp, icmp, icmp6, any
-        #[arg(long, default_value = "any")]
-        proto: String,
-
-        /// Source address (IP, CIDR, "any", or `<table>`)
-        #[arg(long, default_value = "any")]
-        src: String,
-
-        /// Source port or port range (e.g., 80, 8000:9000)
-        #[arg(long)]
-        src_port: Option<String>,
-
-        /// Destination address
-        #[arg(long, default_value = "any")]
-        dst: String,
-
-        /// Destination port or port range
-        #[arg(long)]
-        dst_port: Option<String>,
-
-        /// Network interface
-        #[arg(long)]
-        interface: Option<String>,
-
-        /// Rule priority (0-10000, lower = first)
-        #[arg(long, default_value = "100")]
-        priority: i32,
-
-        /// Enable logging
-        #[arg(long)]
-        log: bool,
-
-        /// Rule label
-        #[arg(long)]
-        label: Option<String>,
-    },
-    /// Remove a rule by ID
-    Remove {
-        /// Rule UUID
-        id: String,
-    },
-    /// List all rules
-    List {
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-}
-
 /// Parse `args` and run the command, writing to `io`. Returns the exit code.
 pub async fn run<I, T>(args: I, io: Io, env: Env) -> i32
 where
@@ -1367,47 +1018,11 @@ async fn dispatch(cli: Cli, ctx: &mut Ctx) -> anyhow::Result<()> {
         Commands::Pending { watch } => commands::staging::pending(ctx, watch).await?,
         Commands::Apply => commands::staging::apply(ctx).await?,
         Commands::Confirm { action } => commands::staging::confirm(ctx, action).await?,
-        Commands::Local { action } => commands::local::run(ctx, action).await?,
+        Commands::Local { action } => commands::local::run(ctx, action, &cli.db).await?,
         Commands::Init { path } => {
-            commands::init(path.as_deref().unwrap_or(&cli.db)).await?;
+            commands::local::init(path.as_deref().unwrap_or(&cli.db)).await?;
         }
-        Commands::Rules { action } => match action {
-            RulesAction::Add {
-                action,
-                direction,
-                proto,
-                src,
-                src_port,
-                dst,
-                dst_port,
-                interface,
-                priority,
-                log,
-                label,
-            } => {
-                commands::rules_add(
-                    &cli.db,
-                    &action,
-                    &direction,
-                    &proto,
-                    &src,
-                    src_port.as_deref(),
-                    &dst,
-                    dst_port.as_deref(),
-                    interface.as_deref(),
-                    priority,
-                    log,
-                    label.as_deref(),
-                )
-                .await?;
-            }
-            RulesAction::Remove { id } => {
-                commands::rules_remove(&cli.db, &id).await?;
-            }
-            RulesAction::List { json } => {
-                commands::rules_list(&cli.db, json).await?;
-            }
-        },
+        Commands::Rules { action } => commands::rules::run(ctx, action).await?,
         Commands::Ids { action } => match action {
             IdsAction::PurgeAlerts { yes } => {
                 commands::ids_purge_alerts(&cli.db, yes).await?;
@@ -1517,99 +1132,8 @@ async fn dispatch(cli: Cli, ctx: &mut Ctx) -> anyhow::Result<()> {
                 commands::syslog_test(&cli.db, host, port).await?;
             }
         },
-        Commands::Nat { action } => match action {
-            NatAction::Add {
-                nat_type,
-                interface,
-                proto,
-                src,
-                src_port,
-                dst,
-                dst_port,
-                redirect,
-                redirect_port,
-                label,
-                static_port,
-                af_to_dst,
-            } => {
-                // Smart default: nat64 practically always matches the
-                // well-known prefix; every other type keeps "any".
-                let dst = dst.unwrap_or_else(|| {
-                    if nat_type == "nat64" {
-                        "64:ff9b::/96".to_string()
-                    } else {
-                        "any".to_string()
-                    }
-                });
-                // masquerade / nonat have no translation target; everything
-                // else needs one.
-                let redirect = match redirect {
-                    Some(r) => r,
-                    None if matches!(
-                        nat_type.as_str(),
-                        "masquerade" | "masq" | "nonat" | "no-nat"
-                    ) =>
-                    {
-                        "any".to_string()
-                    }
-                    None => anyhow::bail!("--redirect is required for --type {nat_type}"),
-                };
-                commands::nat_add(
-                    &cli.db,
-                    &nat_type,
-                    &interface,
-                    &proto,
-                    &src,
-                    src_port.as_deref(),
-                    &dst,
-                    dst_port.as_deref(),
-                    &redirect,
-                    redirect_port.as_deref(),
-                    label.as_deref(),
-                    static_port,
-                    af_to_dst.as_deref(),
-                )
-                .await?;
-            }
-            NatAction::Remove { id } => {
-                commands::nat_remove(&cli.db, &id).await?;
-            }
-            NatAction::List { json } => {
-                commands::nat_list(&cli.db, json).await?;
-            }
-            NatAction::Embed { prefix, ipv4 } => {
-                commands::nat_embed(&prefix, &ipv4)?;
-            }
-        },
-        Commands::Queue { action } => match action {
-            QueueAction::Add {
-                name,
-                interface,
-                queue_type,
-                bandwidth,
-                class,
-                pct,
-                default,
-            } => {
-                commands::queue_add(
-                    &cli.db,
-                    &name,
-                    &interface,
-                    &queue_type,
-                    &bandwidth,
-                    &class,
-                    pct,
-                    default,
-                )
-                .await?;
-            }
-            QueueAction::Remove { id } => {
-                commands::queue_remove(&cli.db, &id).await?;
-            }
-            QueueAction::List { json } => {
-                commands::queue_list(&cli.db, json).await?;
-            }
-        },
+        Commands::Nat { action } => commands::nat::run(ctx, action).await?,
+        Commands::Queue { action } => commands::shaping::run(ctx, action).await?,
         Commands::Ratelimit { action } => match action {
             RateLimitAction::Add {
                 name,
@@ -1621,7 +1145,7 @@ async fn dispatch(cli: Cli, ctx: &mut Ctx) -> anyhow::Result<()> {
                 interface,
                 no_flush,
             } => {
-                commands::ratelimit_add(
+                commands::local::ratelimit_add(
                     &cli.db,
                     &name,
                     &proto,
@@ -1635,48 +1159,13 @@ async fn dispatch(cli: Cli, ctx: &mut Ctx) -> anyhow::Result<()> {
                 .await?;
             }
             RateLimitAction::Remove { id } => {
-                commands::ratelimit_remove(&cli.db, &id).await?;
+                commands::local::ratelimit_remove(&cli.db, &id).await?;
             }
             RateLimitAction::List { json } => {
-                commands::ratelimit_list(&cli.db, json).await?;
+                commands::local::ratelimit_list(&cli.db, json).await?;
             }
         },
-        Commands::Geoip { action } => match action {
-            GeoIpCmd::Add {
-                country,
-                action,
-                label,
-            } => {
-                commands::geoip_add(&cli.db, &country, &action, label.as_deref()).await?;
-            }
-            GeoIpCmd::Remove { id } => {
-                commands::geoip_remove(&cli.db, &id).await?;
-            }
-            GeoIpCmd::List { json } => {
-                commands::geoip_list(&cli.db, json).await?;
-            }
-            GeoIpCmd::Database {
-                license_key_stdin,
-                clear_license_key,
-                account_id,
-                update_interval_hours,
-                json,
-            } => {
-                commands::geoip_database(
-                    license_key_stdin,
-                    clear_license_key,
-                    account_id.as_deref(),
-                    update_interval_hours,
-                    json,
-                )
-                .await?
-            }
-            GeoIpCmd::Refresh => commands::geoip_refresh().await?,
-            GeoIpCmd::Import { files } => commands::geoip_import(&files).await?,
-            GeoIpCmd::Lookup { ip } => {
-                commands::geoip_lookup(&cli.db, &ip).await?;
-            }
-        },
+        Commands::Geoip { action } => commands::geoip::run(ctx, action).await?,
         Commands::Vpn { action } => match action {
             VpnAction::WgAdd {
                 name,
@@ -1756,34 +1245,7 @@ async fn dispatch(cli: Cli, ctx: &mut Ctx) -> anyhow::Result<()> {
             }
             ConfigAction::Diff { v1, v2 } => commands::config_diff(&cli.db, v1, v2).await?,
         },
-        Commands::Routes { action } => match action {
-            RoutesAction::Add {
-                dest,
-                gateway,
-                interface,
-                metric,
-                desc,
-            } => {
-                commands::routes_add(
-                    &cli.db,
-                    &dest,
-                    &gateway,
-                    interface.as_deref(),
-                    metric,
-                    desc.as_deref(),
-                )
-                .await?;
-            }
-            RoutesAction::Remove { id } => {
-                commands::routes_remove(&cli.db, &id).await?;
-            }
-            RoutesAction::List { json } => {
-                commands::routes_list(&cli.db, json).await?;
-            }
-            RoutesAction::System => {
-                commands::routes_system().await?;
-            }
-        },
+        Commands::Routes { action } => commands::routes::run(ctx, action).await?,
         Commands::Dhcp { action } => match action {
             DhcpAction::Status => commands::dhcp_status(&cli.db).await?,
             DhcpAction::Start => {
@@ -1847,40 +1309,8 @@ async fn dispatch(cli: Cli, ctx: &mut Ctx) -> anyhow::Result<()> {
             DhcpAction::Leases { json } => commands::dhcp_leases(json).await?,
             DhcpAction::Apply => commands::dhcp_apply(&cli.db).await?,
         },
-        Commands::Dns { action } => match action {
-            DnsAction::List => {
-                commands::dns_list().await?;
-            }
-            DnsAction::Set { servers } => {
-                commands::dns_set(&servers).await?;
-            }
-            DnsAction::Probe { action } => match action {
-                ProbeAction::On => commands::dns_probe_set(&cli.db, true).await?,
-                ProbeAction::Off => commands::dns_probe_set(&cli.db, false).await?,
-                ProbeAction::Status => commands::dns_probe_status(&cli.db).await?,
-            },
-        },
-        Commands::Users { action } => match action {
-            UsersAction::List { json } => {
-                commands::users_list(&cli.db, json).await?;
-            }
-            UsersAction::Add {
-                username,
-                password,
-                role,
-            } => {
-                commands::users_add(&cli.db, &username, &password, &role).await?;
-            }
-            UsersAction::Remove { id } => {
-                commands::users_remove(&cli.db, &id).await?;
-            }
-            UsersAction::Disable { id } => {
-                commands::users_set_enabled(&cli.db, &id, false).await?;
-            }
-            UsersAction::Enable { id } => {
-                commands::users_set_enabled(&cli.db, &id, true).await?;
-            }
-        },
+        Commands::Dns { action } => commands::dns::run(ctx, action).await?,
+        Commands::Users { action } => commands::users::run(ctx, action).await?,
         Commands::ReverseProxy { action } => match action {
             ReverseProxyAction::Status => commands::rp_status(&cli.db).await?,
             ReverseProxyAction::Start => commands::rp_start().await?,
@@ -1925,16 +1355,20 @@ async fn dispatch(cli: Cli, ctx: &mut Ctx) -> anyhow::Result<()> {
             }
         },
         Commands::Interfaces => {
-            commands::interfaces_list().await?;
+            commands::interfaces::run(ctx).await?;
         }
         Commands::Status => {
-            commands::status(&cli.db).await?;
+            commands::system::status(ctx).await?;
         }
-        Commands::Reload => {
-            commands::reload(&cli.db).await?;
+        Commands::Reload { local } => {
+            if local {
+                commands::local::reload(&cli.db).await?;
+            } else {
+                commands::system::reload(ctx).await?;
+            }
         }
         Commands::Reconcile => {
-            commands::reconcile(&cli.db).await?;
+            commands::local::reconcile(&cli.db).await?;
         }
         Commands::Multiwan { action } => match action {
             MultiwanAction::Instances => commands::multiwan_instances(&cli.db).await?,

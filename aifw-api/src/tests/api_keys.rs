@@ -539,3 +539,40 @@ async fn totp_login_bad_password_counts_toward_limit() {
         .await
         .assert_status(StatusCode::TOO_MANY_REQUESTS);
 }
+
+/// User update/delete identify the actor from the auth middleware, so an
+/// API key (the CLI) can manage users — they used to demand a Bearer JWT.
+#[tokio::test]
+async fn api_key_can_update_and_delete_users() {
+    let (server, pool) = app_with_pool().await;
+    let admin = create_user_and_login(&server).await;
+    let ops_id = create_user(&server, &admin, "ops", "operator").await;
+    let key = mint(&server, &admin, json!({"name": "k"}))
+        .await
+        .json::<Value>()["key"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (n, v) = api_key_header(&key);
+    server
+        .put(&format!("/api/v1/auth/users/{ops_id}"))
+        .add_header(n.clone(), v.clone())
+        .json(&json!({"enabled": false}))
+        .await
+        .assert_status_ok();
+    server
+        .delete(&format!("/api/v1/auth/users/{ops_id}"))
+        .add_header(n, v)
+        .await
+        .assert_status_ok();
+    let (actor,): (String,) =
+        sqlx::query_as("SELECT actor_id FROM user_audit_log WHERE action = 'user_deleted'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let (admin_id,): (String,) = sqlx::query_as("SELECT id FROM users WHERE username = 'admin'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(actor, admin_id, "audit records the key's owner");
+}

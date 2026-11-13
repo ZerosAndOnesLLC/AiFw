@@ -1,8 +1,8 @@
 //! `/api/v1/auth/users` handlers — user CRUD and the per-user audit log.
 
-use super::auth::extract_user_id;
 use super::*;
 use crate::auth;
+use axum::Extension;
 
 /// Protected user creation — requires authentication (admin only via RBAC middleware)
 pub async fn create_user(
@@ -31,13 +31,15 @@ pub async fn get_user(
     Ok(Json(ApiResponse { data: user }))
 }
 
+// The actor comes from the auth middleware, so API-key clients (the CLI)
+// work too — not only Bearer/cookie sessions.
 pub async fn update_user(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    Extension(actor): Extension<auth::AuthUser>,
     Path(id): Path<String>,
     Json(req): Json<auth::UpdateUserRequest>,
 ) -> Result<Json<ApiResponse<auth::User>>, StatusCode> {
-    let actor_id = extract_user_id(&headers, &state)?;
+    let actor_id = actor.user_id;
     let user = auth::update_user(
         &state.pool,
         &id,
@@ -62,10 +64,10 @@ pub async fn update_user(
 
 pub async fn delete_user_handler(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    Extension(actor): Extension<auth::AuthUser>,
     Path(id): Path<String>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
-    let actor_id = extract_user_id(&headers, &state)?;
+    let actor_id = actor.user_id;
     // Prevent self-deletion
     if actor_id == id {
         return Err(StatusCode::BAD_REQUEST);

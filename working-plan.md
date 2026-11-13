@@ -47,7 +47,10 @@ deferred items M5/L5 remain deferred.)
 - (moved to phase 2) Remove legacy HTTP helpers — they go with porting their command groups
 
 ## Phase 2 — Port existing command groups to the API
-- [ ] rules, nat, geoip, shaper, routes, dns, users
+- [x] rules, nat, geoip, shaper, routes, dns, users (+ status/reload/interfaces via API;
+      ratelimit/reconcile/init + break-glass status/reload moved under commands/local —
+      no API for them; fixed: user PUT/DELETE rejected API keys, NAT hint misfire,
+      geoip import multi-file upload)
 - [ ] vpn wg, ids, plugins, syslog, logrotate
 - [ ] multiwan, cluster, reverse-proxy, dhcp
 - [ ] update, config (back-compat tests for every external caller)
