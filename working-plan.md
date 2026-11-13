@@ -62,13 +62,14 @@ deferred items M5/L5 remain deferred.)
       external caller's invocation
 
 ## Phase 3 — New coverage
-- [ ] aliases, schedules, interfaces/vlans
-- [ ] ipsec, acme/ddns, ca, time
-- [ ] dns resolver/blocklists, backup/s3/smtp, settings, system
-- [ ] roles/api-keys/oauth/totp, connections/blocked/logs, ai
+- [x] aliases, schedules, interfaces/vlans
+- [x] ipsec (phase 2b), acme/ddns, ca, time
+- [x] dns resolver/blocklists, backup/s3/smtp, settings, system (+ reboot/shutdown)
+- [x] roles/api-keys/oauth/totp/audit, connections/blocked/logs/metrics/about, ai
 
 ## Phase 4 — Streams and jobs
-- [ ] logs --follow (poll), pending --watch (SSE), top (/ws), update os-upgrade --wait, long timeouts
+- [x] logs --follow (poll), pending --watch (SSE), top, update os-upgrade --wait, long timeouts
+      (change: `top` polls /status + /metrics instead of the /ws WebSocket — no extra WS/TLS client)
 
 ## Phase 5 — Fleet fan-out
 - [x] --context a,b / --all-contexts (+ --parallel N) on read-only commands; per-context

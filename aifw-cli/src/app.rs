@@ -157,8 +157,120 @@ enum Commands {
         #[command(subcommand)]
         action: commands::updates::UpdateCmd,
     },
-    /// Show network interfaces
-    Interfaces,
+    /// Network interfaces (bare: list)
+    Interfaces {
+        #[command(subcommand)]
+        action: Option<commands::interfaces::IfaceCmd>,
+    },
+    /// Address/port aliases usable in rules as <name>
+    Aliases {
+        #[command(subcommand)]
+        action: commands::objects::AliasCmd,
+    },
+    /// Time-of-day schedules for rules
+    Schedules {
+        #[command(subcommand)]
+        action: commands::objects::ScheduleCmd,
+    },
+    /// VLAN interfaces
+    Vlans {
+        #[command(subcommand)]
+        action: commands::objects::VlanCmd,
+    },
+    /// Let's Encrypt (ACME) certificates
+    Acme {
+        #[command(subcommand)]
+        action: commands::certs::AcmeCmd,
+    },
+    /// Dynamic DNS
+    Ddns {
+        #[command(subcommand)]
+        action: commands::certs::DdnsCmd,
+    },
+    /// The internal certificate authority
+    Ca {
+        #[command(subcommand)]
+        action: commands::certs::CaCmd,
+    },
+    /// NTP/PTP time service
+    Time {
+        #[command(subcommand)]
+        action: commands::time::TimeCmd,
+    },
+    /// Off-box backups
+    Backup {
+        #[command(subcommand)]
+        action: commands::backup::BackupCmd,
+    },
+    /// Email notifications
+    Notify {
+        #[command(subcommand)]
+        action: commands::backup::NotifyCmd,
+    },
+    /// Appliance settings sections, login policy, OAuth, AI providers
+    Settings {
+        #[command(subcommand)]
+        action: commands::settings::SettingsCmd,
+    },
+    /// Hostname, banner, SSH, console, system info
+    System {
+        #[command(subcommand)]
+        action: commands::system_cfg::SystemCmd,
+    },
+    /// Reboot the firewall
+    Reboot {
+        #[arg(short, long)]
+        yes: bool,
+    },
+    /// Shut the firewall down
+    Shutdown {
+        #[arg(short, long)]
+        yes: bool,
+    },
+    /// Roles and permissions
+    Roles {
+        #[command(subcommand)]
+        action: commands::identity::RolesCmd,
+    },
+    /// Your two-factor authentication (needs a login session, not an API key)
+    Totp {
+        #[command(subcommand)]
+        action: commands::identity::TotpCmd,
+    },
+    /// Account audit trail (logins, user and key changes)
+    Audit,
+    /// pf state table
+    Connections {
+        #[arg(long, default_value_t = 200)]
+        limit: u32,
+        #[arg(long, default_value_t = 0)]
+        offset: u32,
+    },
+    /// Recently blocked traffic
+    Blocked,
+    /// Firewall change log
+    Logs,
+    /// Counters and recorded time series
+    Metrics {
+        #[command(subcommand)]
+        action: Option<commands::ops::MetricsCmd>,
+    },
+    /// Version and memory use
+    About,
+    /// Live status and counters, refreshed until Ctrl-C
+    Top {
+        /// Seconds between refreshes
+        #[arg(long, default_value_t = 2)]
+        interval: u64,
+        /// Print one frame and exit
+        #[arg(long)]
+        once: bool,
+    },
+    /// AI classification of IDS alerts
+    Ai {
+        #[command(subcommand)]
+        action: commands::ai::AiCmd,
+    },
     /// Show firewall status
     Status,
     /// Apply staged changes and re-apply queues (via the API)
@@ -402,9 +514,32 @@ async fn dispatch(cli: Cli, ctx: &mut Ctx) -> anyhow::Result<()> {
         Commands::Users { action } => commands::users::run(ctx, action).await?,
         Commands::ReverseProxy { action } => commands::reverse_proxy::run(ctx, action).await?,
         Commands::Update { action } => commands::updates::run(ctx, action).await?,
-        Commands::Interfaces => {
-            commands::interfaces::run(ctx).await?;
+        Commands::Interfaces { action } => commands::interfaces::run(ctx, action).await?,
+        Commands::Aliases { action } => commands::objects::aliases(ctx, action).await?,
+        Commands::Schedules { action } => commands::objects::schedules(ctx, action).await?,
+        Commands::Vlans { action } => commands::objects::vlans(ctx, action).await?,
+        Commands::Acme { action } => commands::certs::acme(ctx, action).await?,
+        Commands::Ddns { action } => commands::certs::ddns(ctx, action).await?,
+        Commands::Ca { action } => commands::certs::ca(ctx, action).await?,
+        Commands::Time { action } => commands::time::run(ctx, action).await?,
+        Commands::Backup { action } => commands::backup::backup(ctx, action).await?,
+        Commands::Notify { action } => commands::backup::notify(ctx, action).await?,
+        Commands::Settings { action } => commands::settings::run(ctx, action).await?,
+        Commands::System { action } => commands::system_cfg::run(ctx, action).await?,
+        Commands::Reboot { yes } => commands::system_cfg::power(ctx, false, yes).await?,
+        Commands::Shutdown { yes } => commands::system_cfg::power(ctx, true, yes).await?,
+        Commands::Roles { action } => commands::identity::roles(ctx, action).await?,
+        Commands::Totp { action } => commands::identity::totp(ctx, action).await?,
+        Commands::Audit => commands::identity::audit(ctx).await?,
+        Commands::Connections { limit, offset } => {
+            commands::ops::connections(ctx, limit, offset).await?
         }
+        Commands::Blocked => commands::ops::blocked(ctx).await?,
+        Commands::Logs => commands::ops::logs(ctx).await?,
+        Commands::Metrics { action } => commands::ops::metrics(ctx, action).await?,
+        Commands::About => commands::ops::about(ctx).await?,
+        Commands::Top { interval, once } => commands::ops::top(ctx, interval, once).await?,
+        Commands::Ai { action } => commands::ai::run(ctx, action).await?,
         Commands::Status => {
             commands::system::status(ctx).await?;
         }
