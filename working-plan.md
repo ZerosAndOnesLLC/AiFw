@@ -82,4 +82,6 @@ deferred items M5/L5 remain deferred.)
       write_file guard updated (done during phase 2)
 
 ## Phase 7 — Docs and polish
-- [ ] docs/docs/cli.md rewrite, AIFW_TOKEN docs, README, CLAUDE.md, completions + man page
+- [x] docs/docs/cli.md rewrite, AIFW_TOKEN docs (ha.md, plugins.md), README, CLAUDE.md,
+      `aifw completions <shell>` + `aifw man`; ISO build and deploy.sh install them
+      (update tarballs carry binaries only — existing boxes can run `aifw completions`)

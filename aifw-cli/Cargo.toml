@@ -37,6 +37,8 @@ toml = "0.9"
 comfy-table = { version = "7", default-features = false }
 rpassword = "7"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+clap_complete = "4"
+clap_mangen = "0.2"
 
 [lints]
 workspace = true

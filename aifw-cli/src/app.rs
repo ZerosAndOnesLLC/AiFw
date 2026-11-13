@@ -82,7 +82,7 @@ enum Commands {
         #[command(subcommand)]
         action: commands::nat::NatCmd,
     },
-    /// Manage the IDS engine (alerts, retention)
+    /// Intrusion detection: config, alerts, rules, suppressions
     Ids {
         #[command(subcommand)]
         action: commands::ids::IdsCmd,
@@ -257,6 +257,14 @@ enum Commands {
     },
     /// Version and memory use
     About,
+    /// Print a shell completion script (bash, zsh, fish, elvish, powershell)
+    Completions {
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+    /// Print the man page (roff) — used by packaging
+    #[command(hide = true)]
+    Man,
     /// Live status and counters, refreshed until Ctrl-C
     Top {
         /// Seconds between refreshes
@@ -538,6 +546,18 @@ async fn dispatch(cli: Cli, ctx: &mut Ctx) -> anyhow::Result<()> {
         Commands::Logs => commands::ops::logs(ctx).await?,
         Commands::Metrics { action } => commands::ops::metrics(ctx, action).await?,
         Commands::About => commands::ops::about(ctx).await?,
+        Commands::Completions { shell } => {
+            use clap::CommandFactory;
+            let mut buf = Vec::new();
+            clap_complete::generate(shell, &mut Cli::command(), "aifw", &mut buf);
+            ctx.io.println(String::from_utf8_lossy(&buf).trim_end());
+        }
+        Commands::Man => {
+            use clap::CommandFactory;
+            let mut buf = Vec::new();
+            clap_mangen::Man::new(Cli::command()).render(&mut buf)?;
+            ctx.io.println(String::from_utf8_lossy(&buf).trim_end());
+        }
         Commands::Top { interval, once } => commands::ops::top(ctx, interval, once).await?,
         Commands::Ai { action } => commands::ai::run(ctx, action).await?,
         Commands::Status => {
@@ -700,6 +720,31 @@ mod compat_tests {
                 panic!("`aifw {}` no longer parses:\n{e}", args.join(" "));
             }
         }
+    }
+
+    #[tokio::test]
+    async fn completions_and_man_page_render() {
+        for shell in ["bash", "zsh", "fish"] {
+            let io = crate::cli::Io::buffered("");
+            let (out, _) = io.captures().unwrap();
+            assert_eq!(
+                super::run(
+                    ["aifw", "completions", shell],
+                    io,
+                    crate::cli::Env::default()
+                )
+                .await,
+                0
+            );
+            assert!(out.contents().contains("aifw"), "{shell}");
+        }
+        let io = crate::cli::Io::buffered("");
+        let (out, _) = io.captures().unwrap();
+        assert_eq!(
+            super::run(["aifw", "man"], io, crate::cli::Env::default()).await,
+            0
+        );
+        assert!(out.contents().contains(".TH"));
     }
 
     #[test]

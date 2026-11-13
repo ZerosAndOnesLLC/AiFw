@@ -1,7 +1,7 @@
 ---
 layout: default
 title: "CLI reference — aifw command line"
-description: "Complete aifw CLI reference — rules, NAT, VPN, IDS, DHCP, DNS, multi-WAN, cluster, config, users, status, reload, with output examples."
+description: "The aifw CLI: log in to one or many AiFw firewalls, manage rules, NAT, VPN, IDS, DNS, DHCP, certificates, HA and updates from a terminal or a script, with stable JSON output and exit codes."
 permalink: /docs/cli/
 date: 2026-05-09
 breadcrumb:
@@ -14,10 +14,10 @@ breadcrumb:
   "@context": "https://schema.org",
   "@type": "TechArticle",
   "headline": "CLI reference — aifw command line",
-  "description": "Complete aifw CLI reference — rules, NAT, VPN, IDS, DHCP, DNS, multi-WAN, cluster, config, users, status, reload, with output examples.",
+  "description": "The aifw CLI: log in to one or many AiFw firewalls, manage rules, NAT, VPN, IDS, DNS, DHCP, certificates, HA and updates from a terminal or a script, with stable JSON output and exit codes.",
   "author": { "@type": "Organization", "name": "ZerosAndOnesLLC" },
   "datePublished": "2026-05-09",
-  "dateModified": "2026-05-09",
+  "dateModified": "2026-11-13",
   "articleSection": "Reference"
 }
 </script>
@@ -27,481 +27,291 @@ breadcrumb:
 
 # CLI reference
 
-`aifw` is the local command-line interface to the AiFw daemon &mdash; it talks **directly to the SQLite database** and the local pf engine, not to the HTTP API. Use it when:
+`aifw` is a client for the AiFw REST API. Everything it changes goes through
+the same validation, audit log, config versioning and HA replication as the
+web UI. It runs:
 
-- You&rsquo;re on the appliance console (no UI) and need to inspect, recover, or change something.
-- You want to script bulk imports or one-off changes without standing up an API client.
-- You&rsquo;re writing post-install hooks or HA failover scripts that run as root locally.
+- **on the appliance**, as root, with no setup at all;
+- **from any machine** (a laptop, a jump host, CI) after `aifw login`;
+- **against several firewalls at once** for read-only commands.
 
-For remote / unprivileged callers, use the [REST API]({{ '/docs/api/' | relative_url }}) instead &mdash; it does the same things but with full RBAC.
+A small `aifw local` group keeps working when the API itself is down.
+
+## Getting started
+
+### On the appliance
+
+As root, just run commands:
+
+```sh
+aifw status
+aifw rules list
+```
+
+The first time it runs as root, `aifw` creates an admin API key for itself in
+`/usr/local/etc/aifw/cli.key` (mode 0600) and talks to `https://127.0.0.1:8080`,
+pinned to the API's own certificate. `aifw local cli-key --rotate` replaces it.
+
+### From another machine
+
+```sh
+aifw login https://fw1.example.com:8080 --context fw1
+```
+
+`login` shows the SHA-256 fingerprint of the certificate the firewall presents
+and asks before trusting it (compare it with **Settings → TLS** in the UI), then
+asks for your username, password and TOTP code. Pass `--pin <fingerprint>` to
+skip the question, `--password-stdin` for scripts, or log in with an API key:
+
+```sh
+aifw api-keys create --name laptop --expires-days 90      # on a box you're logged in to
+printf '%s' "$KEY" | aifw login https://fw1:8080 --context fw1 --api-key-stdin
+```
+
+Sessions refresh themselves; `aifw logout` revokes the session on the firewall.
+`aifw whoami` shows who you are, the role and where the credential came from.
+
+### Contexts
+
+Each saved firewall is a *context*. Contexts live in `~/.config/aifw/config.toml`
+(URL, certificate pin, default output) and their secrets in
+`~/.config/aifw/credentials.toml` (mode 0600). `$AIFW_CONFIG_DIR` moves both.
+
+```sh
+aifw context list
+aifw context use fw2
+aifw --context fw1 rules list
+aifw context set-pin fw1               # after the firewall's certificate changed
+aifw context rename fw1 edge-1
+aifw context rm old-box
+```
+
+### Credentials for scripts
+
+| Source | How |
+|---|---|
+| A context | `aifw --context fw1 …` |
+| API key in the environment | `AIFW_TOKEN=aifw_… AIFW_API_URL=https://fw1:8080 aifw … --pin <sha256>` |
+| Ad hoc flags | `--url`, `--api-key`, `--pin` |
+
+Precedence: flags and environment, then the selected context, then the on-box
+default. Keys can be narrowed to a role and given an expiry
+(`aifw api-keys create --role builtin-viewer --expires-days 30`).
 
 ## Global flags
 
-```
-aifw [--db <path>] <subcommand> [<args>...]
-```
-
-| Flag | Default | Notes |
-|---|---|---|
-| `--db <path>` | `/var/db/aifw/aifw.db` | Path to the AiFw SQLite database. Override for tests or alternate installs. |
-| `--help` / `-h` | &mdash; | Show help for any subcommand. |
-| `--version` | &mdash; | Print the AiFw version string. |
-
-Most list commands accept `--json` for machine-readable output. Most failures exit non-zero and print a one-line error to stderr.
-
-## Subcommand groups
-
-| Subcommand | Purpose |
+| Flag | Meaning |
 |---|---|
-| `aifw init` | Initialise the AiFw database file |
-| `aifw rules` | Manage firewall rules |
-| `aifw nat` | Manage NAT rules |
-| `aifw queue` | Manage traffic queues (CoDel / HFSC / PRIQ) |
-| `aifw ratelimit` | Manage rate-limit rules |
-| `aifw geoip` | Manage geo-IP filtering |
-| `aifw vpn` | Manage WireGuard / IPsec tunnels |
-| `aifw config` | Versioned config history, import / export, rollback |
-| `aifw routes` | Manage static routes |
-| `aifw dns` | Manage DNS nameservers + post-switch probe |
-| `aifw syslog` | Remote syslog forwarding (server, categories, test) |
-| `aifw logrotate` | Rotation policy for AiFw service logs |
-| `aifw plugins` | View and configure built-in plugins (threat feeds, notifier) |
-| `aifw dhcp` | Manage the DHCP server (rDHCP) |
-| `aifw users` | Manage local users |
-| `aifw reverse-proxy` | Control TrafficCop |
-| `aifw update` | AiFw firmware + OS updates |
-| `aifw multiwan` | Multi-WAN instances, gateways, groups, policies, leaks |
-| `aifw cluster` | HA / cluster operations (CARP, pfsync, nodes, health) |
-| `aifw interfaces` | Show network interfaces |
-| `aifw status` | Show firewall status |
-| `aifw reload` | Reload rules from DB and apply to pf |
-| `aifw reconcile` | Reconcile kernel pf state and rc.conf against DB / pf.conf.aifw |
+| `--context NAME[,NAME…]` | Context to use (`AIFW_CONTEXT`); several = fan-out |
+| `--all-contexts` | Fan a read-only command out to every saved context |
+| `--parallel N` | Fan-out concurrency (default 8) |
+| `--url URL` | API base URL (`AIFW_API_URL`) |
+| `--api-key KEY` | API key or bearer token (`AIFW_TOKEN`) |
+| `--pin SHA256` | Pin the API certificate |
+| `-o, --output table\|wide\|json\|yaml` | Output format |
+| `--no-input` | Never prompt; fail when input would be needed |
+| `--request-timeout SECS` | Per-request timeout |
+| `--db PATH` | Database path, used only by `aifw local` |
 
-Source: [`aifw-cli/src/main.rs`](https://github.com/ZerosAndOnesLLC/AiFw/blob/main/aifw-cli/src/main.rs).
+## Output
 
----
+Tables by default; `-o wide` adds columns. `-o json` and `-o yaml` print the
+API's own response unchanged, so scripts get a stable shape. The old per-command
+`--json` flags still work. Errors go to stderr; with `-o json` they are JSON too:
 
-## init
-
-Initialise the database (run once at install time; the installer wizard does this for you).
-
-```bash
-aifw init
-aifw init --path /var/db/aifw/aifw.db
+```json
+{"error":"not authenticated: …","kind":"unauthenticated","exit_code":3}
 ```
-
-## rules
-
-Manage stateful firewall rules in the `aifw` pf anchor.
-
-```bash
-# List rules
-aifw rules list
-aifw rules list --json
-
-# Add a rule
-aifw rules add \
-  --action pass --direction in --proto tcp \
-  --src any --dst any --dst-port 443 \
-  --interface em0 --priority 100 \
-  --label "https-inbound"
-
-# Remove by UUID
-aifw rules remove 8e2c1a9f-5c0e-4f7e-9a01-94f1b3a2e678
-```
-
-Field reference: `action` is `pass` / `block` / `block-drop` / `block-return`; `direction` is `in` / `out` / `any`; `priority` is 0&ndash;10000 (lower applies first).
-
-## nat
-
-Manage NAT rules in the `aifw-nat` anchor.
-
-```bash
-aifw nat list
-
-# Port-forward 443 to an internal host
-aifw nat add \
-  --nat-type dnat --interface em0 --proto tcp \
-  --dst any --dst-port 443 \
-  --redirect 10.0.0.20 --redirect-port 443 \
-  --label "ingress-https"
-
-# Outbound NAT (masquerade)
-aifw nat add \
-  --nat-type masquerade --interface em0 --proto any \
-  --src 10.0.0.0/24 --dst any --redirect any
-
-# NAT64 — IPv6-only clients reach IPv4 hosts (dst defaults to 64:ff9b::/96)
-aifw nat add --nat-type nat64 --interface em1 --redirect 203.0.113.1
-
-# NAT46 — IPv4 clients reach an IPv6 server on the address it already has
-# (omit --af-to-dst to use the RFC 6052 embedded address instead)
-aifw nat add --nat-type nat46 --interface em0 --dst 192.0.2.80 \
-  --redirect 2001:db8:2::1 --af-to-dst 2001:db8:2::80
-
-# Print the RFC 6052 embedded address clients use for an IPv4 host
-aifw nat embed 64:ff9b::/96 10.1.2.3     # -> 64:ff9b::a01:203
-```
-
-Supported NAT types: `snat`, `dnat`, `masquerade`, `binat`, `nat64`, `nat46` (cross-family types translate via pf `af-to`, FreeBSD 15+).
-
-## queue &amp; ratelimit
-
-Traffic shaping and connection-rate limits.
-
-```bash
-# Create a CoDel queue capped at 100 Mb/s on em0
-aifw queue add \
-  --name uplink --interface em0 \
-  --type codel --bandwidth 100Mb --class default --default
-
-aifw queue list
-
-# Limit any single source IP to 60 new TCP/443 conns per minute
-aifw ratelimit add \
-  --name https-flood --proto tcp \
-  --max-conn 60 --window 60 \
-  --table flooders --dst-port 443 --interface em0
-```
-
-Overload offenders land in the named pf table (`flooders` above) so you can block them with a rule.
-
-## geoip
-
-Country rules write the database directly; the running API re-applies the `aifw-geoip` anchor within a minute. The GeoLite2 database behind the rules lives in the API process, so `database`, `refresh` and `import` ask the API and need an API key with `geoip:read` (`geoip:write` for changes) in `AIFW_TOKEN`.
-
-```bash
-aifw geoip add --country CN --action block --label "block China"
-aifw geoip list                                      # rules, with live network counts from the API
-aifw geoip lookup 8.8.8.8
-aifw geoip remove <uuid>
-
-export AIFW_TOKEN=…                                  # an API key (Settings → API keys)
-aifw geoip database                                  # loaded? source, schedule, next/last refresh, last error
-aifw geoip database --account-id 123456              # MaxMind account ID (pairs with the key)
-printf '%s' "$KEY" | aifw geoip database --license-key-stdin   # MaxMind key, stored sealed
-aifw geoip database --update-interval-hours 168      # weekly (default); 0 turns auto-refresh off
-aifw geoip refresh                                   # download the GeoLite2 Country release now
-aifw geoip import GeoLite2-Country-CSV_20261001.zip  # or the .csv files
-```
-
-Nothing is blocked until a database is loaded: `list` and `database` both say so.
-
-## vpn
-
-WireGuard and IPsec tunnels in one tree.
-
-```bash
-# WireGuard tunnel
-aifw vpn wg-add --name road-warriors \
-  --interface wg0 --port 51820 --address 10.50.0.1/24
-
-# Add a peer
-aifw vpn wg-peer-add --tunnel <tunnel-id> \
-  --name laptop --pubkey <peer-public-key> \
-  --allowed-ips 10.50.0.10/32 --keepalive 25
-
-# IPsec IKEv2 site-to-site tunnel (PSK; use the web UI/API for cert auth)
-aifw vpn ipsec-add --name site-to-site \
-  --remote 203.0.113.7 --psk <16+ char secret> \
-  --local-ts 10.0.0.0/24 --remote-ts 10.1.0.0/24
-
-# Live negotiated state from charon; manual initiate/terminate
-aifw vpn ipsec-status
-aifw vpn ipsec-start <tunnel-id>
-aifw vpn ipsec-stop <tunnel-id>
-
-aifw vpn list
-```
-
-## config
-
-Versioned configuration: every `aifw reload` snapshots the active config so you can diff or roll back.
-
-```bash
-aifw config show
-aifw config history --limit 20
-
-# Diff version 17 against version 22
-aifw config diff 17 22
-
-# Rollback
-aifw config rollback 17
-
-# Export / import (full JSON dump; secrets redacted by default)
-aifw config export > backup.json
-aifw config import backup.json
-
-# Portable backup — secrets passphrase-wrapped (Argon2id + AES-256-GCM).
-# The passphrase comes from --passphrase-file (first line) or $AIFW_BACKUP_PASSPHRASE.
-aifw config export --secrets passphrase --passphrase-file /root/.backup-pass > backup.json
-aifw config import backup.json --passphrase-file /root/.backup-pass
-
-# Plaintext secrets (prints a warning — protect the output)
-aifw config export --secrets plain > backup.json
-```
-
-## routes
-
-Static routes (kernel-level, separate from multi-WAN policy routing).
-
-```bash
-aifw routes add --dest 10.20.0.0/16 --gateway 10.0.0.1 --metric 0
-aifw routes list
-aifw routes system    # netstat -rn
-aifw routes remove <id>
-```
-
-## dns
-
-Manage the resolver&rsquo;s upstream nameservers and the post-switch probe (auto-rollback if `:53` goes silent after a backend swap).
-
-```bash
-aifw dns list
-aifw dns set "1.1.1.1, 9.9.9.9"
-
-aifw dns probe on        # enable auto-rollback
-aifw dns probe off
-aifw dns probe status
-```
-
-## syslog
-
-Forward pf packet logs, IDS alerts, and application logs to a remote syslog server / SIEM. `set` only changes the flags you pass; all AiFw services pick up changes within 60 seconds.
-
-```bash
-aifw syslog show                 # human-readable summary (--json for JSON)
-aifw syslog set --host 192.168.1.10 --port 514 --pf true
-aifw syslog enable               # master switch (requires a host)
-aifw syslog disable
-
-aifw syslog set --transport tcp --format rfc5424 --facility local3
-aifw syslog set --app true --app-min-level warn
-aifw syslog set --disable-local true   # stop local pf/app log files while forwarding
-
-aifw syslog test                 # one test message with the saved config
-aifw syslog test --host 10.0.0.9 --port 5514
-```
-
-## logrotate
-
-One size-based rotation policy for every AiFw-managed service log (API, daemon, IDS, watchdog, rDNS, rDHCP, rTIME, TrafficCop). AiFw renders it into `/usr/local/etc/newsyslog.conf.d/aifw.conf`; FreeBSD's hourly `newsyslog` cron job does the rotating, and the rc.d scripts run daemon(8) with `-H` so the log is reopened after each rotation.
-
-```bash
-aifw logrotate show              # policy + current size of every managed log (--json for JSON)
-aifw logrotate set --max-size 20 --keep 5      # rotate above 20 MB, keep 5 generations
-aifw logrotate set --compression zstd          # gzip (default), bzip2, xz, zstd, none
-aifw logrotate rotate            # rotate anything currently over its limit
-aifw logrotate rotate --path /var/log/rtime/rtime.log   # force-rotate one log now
-```
-
-Defaults: rotate above 5 MB, keep 7 generations, gzip.
-
-## plugins
-
-Configure and operate the built-in plugins. Configuration commands write the same table the web UI uses, through the same validation, and work whether or not the API is running; the running API applies them within about ten seconds and `enable` / `disable` wait for it to confirm. Runtime commands (`status`, `logs`, `run`) ask the running API and need an API key with `plugins:read` (`plugins:write` for `run`) in `AIFW_TOKEN`.
-
-```bash
-aifw plugins list                                    # name, title, enabled, runtime state (--json)
-aifw plugins show threat-feeds                       # every setting, its value, allowed values, actions
-aifw plugins set threat-feeds refresh_hours=6 feeds=spamhaus-drop,feodo
-aifw plugins set threat-feeds allowlist=198.51.100.0/24,203.0.113.7
-aifw plugins set notifier --secret ntfy_url=https://ntfy.sh/my-topic
-printf '%s' "$TOKEN" | aifw plugins set notifier --secret-stdin ntfy_token   # keeps it out of history/ps
-aifw plugins set notifier --unset dedupe_minutes     # back to the default
-aifw plugins enable notifier                         # refused with a reason if it can't start yet
-aifw plugins disable threat-feeds                    # removes its pf rules and table contents
-aifw plugins reset notifier                          # forget settings, secrets and stored data, disable
-
-export AIFW_TOKEN=…                                  # an API key (Settings → API keys)
-aifw plugins status                                  # state, last error, counters, live status
-aifw plugins logs threat-feeds --level warn          # the plugin's activity log
-aifw plugins run threat-feeds refresh                # actions, with key=value arguments
-aifw plugins run threat-feeds lookup ip=203.0.113.9
-aifw plugins run notifier test channel=ntfy
-```
-
-Lists are comma-separated. Secrets must be passed with `--secret` or `--secret-stdin` and are never printed back.
-
-## dhcp
-
-Drive the rDHCP companion service end-to-end.
-
-```bash
-aifw dhcp status
-aifw dhcp start | stop | restart
-
-# Subnets and reservations
-aifw dhcp subnets
-aifw dhcp subnet-add \
-  --network 10.0.0.0/24 \
-  --pool-start 10.0.0.100 --pool-end 10.0.0.200 \
-  --gateway 10.0.0.1 --dns "10.0.0.1" \
-  --domain "lan" --lease-time 86400
-
-aifw dhcp reservations
-aifw dhcp reservation-add \
-  --mac aa:bb:cc:dd:ee:ff --ip 10.0.0.50 \
-  --hostname printer-1
-
-aifw dhcp leases
-aifw dhcp apply       # write config + restart rDHCP
-```
-
-## users
-
-Local-account CRUD. For SSO / OAuth users use the API or the UI.
-
-```bash
-aifw users add --username alice --password "...." --role admin
-aifw users list
-aifw users disable <id>
-aifw users enable <id>
-aifw users remove <id>
-```
-
-Roles: `admin` / `operator` / `viewer` (see [Auth &amp; RBAC]({{ '/docs/auth/' | relative_url }})).
-
-## reverse-proxy
-
-Control the local TrafficCop instance.
-
-```bash
-aifw reverse-proxy status
-aifw reverse-proxy start | stop | restart
-aifw reverse-proxy validate    # dry-run validate generated YAML
-aifw reverse-proxy apply       # generate + write + reload
-
-aifw reverse-proxy routers --json
-aifw reverse-proxy services --json
-aifw reverse-proxy middlewares
-aifw reverse-proxy entrypoints
-aifw reverse-proxy show-config   # print generated YAML
-```
-
-## update
-
-AiFw firmware updates plus host OS / package updates.
-
-```bash
-# AiFw firmware
-aifw update check
-aifw update install                           # download + install latest
-aifw update install --restart                 # also restart services
-aifw update install --from /tmp/aifw.tar.xz   # local tarball
-aifw update rollback                          # revert to previous version
-aifw update restart                           # bounce services after install
-aifw update reboot                            # full reboot
-
-# OS / packages
-aifw update os-check
-aifw update os-install
-```
-
-`install` and `rollback` do **not** restart services automatically &mdash; run `aifw update restart` (or pass `--restart` / `-y`) when you&rsquo;re ready for the brief outage.
-
-## multiwan
-
-Inspect and apply multi-WAN configuration.
-
-```bash
-aifw multiwan instances
-aifw multiwan gateways      # live health
-aifw multiwan groups
-aifw multiwan policies
-aifw multiwan leaks
-aifw multiwan flows         # live pf flows tagged by FIB
-aifw multiwan fib-info
-
-aifw multiwan apply         # recompile + apply all anchors
-aifw multiwan seed-mgmt     # seed management-escape leaks
-
-# Force a probe outcome (testing only)
-aifw multiwan probe <gateway-id> ok
-aifw multiwan probe <gateway-id> fail
-
-# Export / import the full multi-WAN config as JSON
-aifw multiwan export > mwan.json
-aifw multiwan import mwan.json
-```
-
-## cluster
-
-CARP + pfsync HA operations.
-
-```bash
-aifw cluster status --json
-
-# CARP VIPs
-aifw cluster carp list
-aifw cluster carp add --vhid 10 --interface em0 \
-  --vip 192.0.2.1/24 --password "carp-shared-secret"
-aifw cluster carp remove <id>
-
-# pfsync
-aifw cluster pfsync get
-aifw cluster pfsync set --sync-interface em1 --sync-peer 10.99.0.2 \
-  --defer true --latency-profile conservative
-
-# Cluster nodes
-aifw cluster nodes list
-aifw cluster nodes add --name node-b --address 10.99.0.2 --role secondary
-
-# Health checks
-aifw cluster health list
-aifw cluster health add --name uplink --check-type ping \
-  --target 8.8.8.8 --interval-secs 10
-aifw cluster health run     # probe everything now
-
-# Failover
-aifw cluster promote        # this node -> master immediately
-aifw cluster demote         # this node -> backup immediately
-aifw cluster sync           # pull a snapshot from peer
-aifw cluster verify --json  # exit non-zero if unhealthy
-```
-
-## interfaces / status / reload / reconcile
-
-Diagnostic + apply commands.
-
-```bash
-aifw interfaces        # list interfaces with addresses + flags
-aifw status            # daemon + pf health summary
-
-aifw reload            # reload rules from DB and apply to pf
-aifw reconcile         # repair drift between DB, pf.conf.aifw, and rc.conf
-```
-
-`reconcile` is the safe choice when you suspect the kernel pf state has drifted from the database &mdash; for example after a manual `pfctl -F` or a partial `freebsd-update` run. It re-applies anchor hooks if missing and fixes `rc.conf` DNS-backend flags that disagree with the database.
-
-## Output formats
-
-Subcommands that return lists accept `--json` to emit raw JSON for piping into `jq` or another tool:
-
-```bash
-aifw rules list --json | jq '.[] | select(.action == "block")'
-aifw multiwan gateways | jq '.[] | {name, state}'
-```
-
-Subcommands without `--json` print human-readable tables.
 
 ## Exit codes
 
 | Code | Meaning |
 |---|---|
-| `0` | Success |
-| `1` | Generic error (validation, missing record, runtime failure) &mdash; reason on stderr |
-| `2` | Usage error (clap-level: bad args, unknown subcommand) |
+| 0 | Success |
+| 1 | Other error (including a declined confirmation, or a check that failed) |
+| 2 | Usage error |
+| 3 | Not authenticated (HTTP 401) |
+| 4 | Permission denied (HTTP 403) |
+| 5 | Not found (HTTP 404) |
+| 6 | Rejected by validation (HTTP 400/422) |
+| 7 | API unreachable, or TLS/certificate-pin failure |
+| 8 | Fan-out: some contexts failed |
+| 9 | Commit-confirm: nothing to confirm (the change rolled back) |
 
-`aifw cluster verify` is the most explicit user of non-zero exits &mdash; cron / monitoring scripts can rely on its exit code as a single-bit health signal.
+Commands that delete or replace things ask first. `-y/--yes` answers yes;
+with no terminal (cron) an unanswered prompt means **no**.
+
+## Staged changes and commit-confirm
+
+Like the UI, filter/NAT/alias/VLAN changes are **staged** until applied:
+
+```sh
+aifw rules add --action block --src 203.0.113.0/24 --label bad-net
+aifw pending                 # Unapplied changes: firewall (run `aifw apply`)
+aifw apply                   # load into pf
+aifw rules add … --apply     # or apply right away
+```
+
+For risky changes on a remote box, arm a rollback window **first**:
+
+```sh
+aifw confirm arm --timeout 5m --description "tighten WAN rules"
+aifw rules edit 3f2a… --action block --apply
+aifw confirm accept          # keep it; if you lost access, it reverts by itself
+```
+
+`aifw pending --watch` streams pending-state changes. `aifw reload` = apply plus
+re-applying traffic-shaping queues.
+
+## Several firewalls at once
+
+Read-only commands accept several contexts:
+
+```sh
+aifw --context fw1,fw2 status
+aifw --all-contexts cluster verify -o json
+```
+
+Tables print one section per firewall; JSON is
+`[{"context":…,"exit_code":…,"result":…,"error":…}]`. The exit code is 0 when all
+succeed, 8 when some fail. Commands that change things refuse to fan out.
+
+## Command reference
+
+`aifw <group> --help` lists every subcommand and flag. Most collections have
+`list` (`ls`), `show`, `add`, `edit` (only the flags you pass change), `enable`,
+`disable` and `rm`. Where an object has many fields, `add -f file.json` (or YAML,
+or `-f -` for stdin) takes it in the API's shape — `list -o json` shows examples.
+
+### Firewall
+
+| Command | |
+|---|---|
+| `aifw rules list\|show\|add\|edit\|enable\|disable\|rm\|reorder\|system\|block-logging` | Filter rules |
+| `aifw nat list\|show\|add\|edit\|enable\|disable\|rm\|reorder\|pf-output\|embed` | NAT (snat, dnat, masquerade, binat, nat64, nat46, nonat) |
+| `aifw aliases …` | Address/port tables, used in rules as `<name>`; `edit --add/--del` entries |
+| `aifw schedules …` | Time-of-day windows for rules |
+| `aifw geoip list\|add\|edit\|rm\|lookup\|database\|refresh\|import` | Country rules and the GeoLite2 database |
+| `aifw queue …` | Traffic-shaping queues |
+| `aifw ratelimit …` | Connection rate limits (local only — no API yet) |
+
+```sh
+aifw rules add --action pass --proto tcp --dst 10.0.0.5 --dst-port 443 --interface em0 --label web
+aifw nat add --type dnat --interface em0 --dst-port 80 --redirect 10.0.0.5 --redirect-port 8080
+aifw aliases add --name admins --type network --entries 10.1.0.0/24,10.2.0.0/24
+```
+
+### Network and services
+
+| Command | |
+|---|---|
+| `aifw interfaces [list\|detail\|stats\|role\|configure]` | Interfaces, roles, live addressing |
+| `aifw vlans …` | VLAN interfaces |
+| `aifw routes list\|add\|edit\|rm\|system` | Static routes |
+| `aifw multiwan instances\|gateways\|groups\|policies\|leaks\|flows\|apply\|export\|import\|probe` | Multi-WAN |
+| `aifw dns list\|set\|status\|apply\|start\|stop\|restart\|config\|hosts\|add-host\|domains\|acls\|logs\|stats\|probe` | Upstreams and the resolver |
+| `aifw dns blocklists …`, `aifw dns whitelist`, `aifw dns customblocks` | DNS blocking |
+| `aifw dhcp status\|subnets\|subnet-add\|subnet-edit\|reservations\|leases\|release\|apply\|logs` | DHCP server |
+| `aifw time status\|config\|sources\|add-source\|apply\|logs` | NTP/PTP |
+| `aifw reverse-proxy status\|apply\|validate\|logs\|<collection> …` | TrafficCop routers, services, middlewares, TLS |
+
+### VPN
+
+```sh
+aifw vpn wg add --name road --address 10.8.0.1/24
+aifw vpn wg peers add <tunnel> --name laptop --generate-key
+aifw vpn wg peers config <tunnel> <peer> -O laptop.conf      # 0600
+printf '%s' "$PSK" | aifw vpn ipsec add --name branch --remote 198.51.100.7 \
+    --local-ts 10.0.0.0/24 --remote-ts 10.1.0.0/24 --psk-stdin
+aifw vpn ipsec status
+```
+
+### Security
+
+| Command | |
+|---|---|
+| `aifw ids config\|alerts\|stats\|reload\|rulesets\|rules\|suppressions\|retention\|purge-alerts` | Intrusion detection |
+| `aifw ai analyze\|audit` | AI classification of alerts |
+| `aifw plugins list\|show\|enable\|disable\|set\|reset\|status\|logs\|run` | Plugins (threat feeds, notifier) |
+
+### Certificates
+
+| Command | |
+|---|---|
+| `aifw acme account\|certs\|dns-providers\|test-provider\|targets` | Let's Encrypt |
+| `aifw ddns records\|update\|config` | Dynamic DNS |
+| `aifw ca show\|init\|pem\|crl\|certs issue\|pem\|key\|revoke` | Internal CA; `issue --out-dir` writes the cert and a 0600 key |
+
+### Users and access
+
+| Command | |
+|---|---|
+| `aifw users list\|show\|add\|set-role\|passwd\|enable\|disable\|rm` | Accounts (id or username) |
+| `aifw roles list\|show\|permissions\|add\|edit\|rm` | Custom roles |
+| `aifw api-keys list\|create\|revoke` | API keys; `create` prints the secret alone on stdout |
+| `aifw totp setup\|verify\|disable` | Your 2FA (needs a login session) |
+| `aifw audit` | Account audit trail |
+
+### Configuration and backup
+
+| Command | |
+|---|---|
+| `aifw config show\|history\|save\|diff\|check\|retention` | Versions |
+| `aifw config export [--secrets passphrase] [-O file]` | Export (secrets redacted or passphrase-wrapped) |
+| `aifw config import FILE [--preview]` | Import an export (applies it; asks first) |
+| `aifw config import-opnsense FILE [--preview] [--map lan=em1]` | Migrate from OPNsense |
+| `aifw config rollback VERSION` | Restore and apply a version |
+| `aifw backup s3 config\|test\|list\|restore`, `aifw notify smtp config\|test` | Off-box backups, email |
+
+### Appliance
+
+| Command | |
+|---|---|
+| `aifw status`, `aifw top`, `aifw about`, `aifw metrics` | Health and counters |
+| `aifw connections`, `aifw blocked`, `aifw logs` | State table, blocked traffic, change log |
+| `aifw system info\|general\|banner\|ssh\|console\|timezones` | System settings |
+| `aifw settings get\|set SECTION`, `aifw settings auth\|oauth-providers\|oauth-url\|ai-models\|ai-test` | Settings |
+| `aifw syslog …`, `aifw logrotate …` | Remote syslog, log rotation |
+| `aifw cluster status\|carp\|pfsync\|nodes\|health\|promote\|demote\|maintenance\|sync\|verify` | HA; `verify --json` is what `scripts/ha-verify.sh` reads |
+| `aifw update check\|install [--from tarball]\|rollback\|restart\|reboot\|os-check\|os-install\|os-upgrade [--wait]\|status\|history\|prerelease` | Updates |
+| `aifw reboot`, `aifw shutdown` | Power |
+
+Service log tails (`dhcp logs`, `dns logs`, `time logs`, `reverse-proxy logs`)
+take `-F/--follow`.
+
+## When the API is down: `aifw local`
+
+These run as root on the appliance and use the database and pf directly:
+
+| Command | |
+|---|---|
+| `aifw local status` | pf, anchor hooks and DNS-backend drift, read from the box |
+| `aifw local reload` (or `aifw reload --local`) | Load rules, NAT, queues and rate limits into pf |
+| `aifw local reconcile` (also `aifw reconcile`) | Restore missing anchor hooks, fix rc.conf DNS backend flags |
+| `aifw local update check\|install\|rollback\|restart\|reboot\|os-*` | The updater, e.g. to roll back a release that broke the API |
+| `aifw local config-export --secrets plain` | Export with secrets in the clear (never served by the API) |
+| `aifw local init`, `aifw local cli-key [--rotate]` | Create the database; mint the on-box CLI key |
+
+When a normal command can't reach the API on the appliance, its error points at
+the matching `aifw local` command.
+
+## Shell completion and man page
+
+```sh
+aifw completions bash > /usr/local/share/bash-completion/completions/aifw
+aifw completions zsh  > /usr/local/share/zsh/site-functions/_aifw
+aifw completions fish > ~/.config/fish/completions/aifw.fish
+```
+
+The ISO installs the bash and zsh completions and `man aifw`.
 
 ## See also
 
 - [REST API reference &rarr;]({{ '/docs/api/' | relative_url }})
 - [Auth &amp; RBAC &rarr;]({{ '/docs/auth/' | relative_url }})
 - [Backup &amp; migration &rarr;]({{ '/docs/backup/' | relative_url }})
-- Source: [`aifw-cli/src/main.rs`](https://github.com/ZerosAndOnesLLC/AiFw/blob/main/aifw-cli/src/main.rs)
 - Source: [`aifw-cli/src/commands/`](https://github.com/ZerosAndOnesLLC/AiFw/tree/main/aifw-cli/src/commands)
+- Source: [`aifw-client/`](https://github.com/ZerosAndOnesLLC/AiFw/tree/main/aifw-client)
 
 </article>
 </div>
