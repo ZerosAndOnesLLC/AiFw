@@ -194,6 +194,7 @@ pub(super) async fn login_cookies(server: &TestServer) -> Vec<String> {
     set_cookies(&resp)
 }
 
+mod api_keys;
 mod auth;
 mod backup;
 mod cluster;

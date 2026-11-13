@@ -75,8 +75,8 @@ pub async fn auth_middleware(
         return Err(StatusCode::FORBIDDEN);
     }
 
-    // Resolve (user_id, perm_from_token, role_from_token, api_key_name) from the credential
-    let (user_id, jwt_perm, jwt_role, api_key_name) = if let Some(token) = auth_header
+    // Resolve (user_id, perm_from_token, role_from_token, api_key) from the credential
+    let (user_id, jwt_perm, jwt_role, api_key) = if let Some(token) = auth_header
         .and_then(|h| h.strip_prefix("Bearer "))
         .or(cookie_token.as_deref())
     {
@@ -130,8 +130,9 @@ pub async fn auth_middleware(
         }
         (claims.sub, claims.perm, claims.role, None)
     } else if let Some(key) = auth_header.and_then(|h| h.strip_prefix("ApiKey ")) {
-        let (uid, key_name) = verify_api_key(&state.pool, key).await?;
-        (uid, None, None, Some(key_name)) // API keys don't carry JWT claims — will do DB lookup
+        let identity = verify_api_key(&state.pool, key).await?;
+        // API keys don't carry JWT claims — permissions come from the DB below.
+        (identity.user_id.clone(), None, None, Some(identity))
     } else if let Some(ticket_id) = query_ticket(request.uri().query()) {
         let uid = state
             .ws_tickets
@@ -165,7 +166,7 @@ pub async fn auth_middleware(
     }
 
     // Resolve permissions: from JWT if present, otherwise DB lookup
-    let (perm_set, role_name) = match jwt_perm {
+    let (mut perm_set, mut role_name) = match jwt_perm {
         Some(bits) => (
             PermissionSet::from_bits(bits),
             jwt_role.unwrap_or_else(|| user.role.clone()),
@@ -182,6 +183,17 @@ pub async fn auth_middleware(
             (PermissionSet::from_bits(bits), name)
         }
     };
+
+    // A key narrowed to a role gets the intersection of its owner's
+    // permissions and that role's. A role that has since been deleted
+    // leaves the key with no permissions (fail closed).
+    if let Some(role_id) = api_key.as_ref().and_then(|k| k.role_id.as_deref()) {
+        let (key_bits, key_role) = super::api_keys::role_permission_bits(&state.pool, role_id)
+            .await?
+            .unwrap_or((0, role_id.to_string()));
+        perm_set = narrow_permissions(perm_set, key_bits);
+        role_name = key_role;
+    }
 
     // Dispatch ApiRequest hook to plugins; `wants` is one atomic load, so
     // the common no-subscriber case costs nothing.
@@ -211,7 +223,8 @@ pub async fn auth_middleware(
         username: user.username.clone(),
         permissions: perm_set,
         role: role_name,
-        api_key_name,
+        api_key_name: api_key.as_ref().map(|k| k.key_name.clone()),
+        api_key_id: api_key.map(|k| k.key_id),
     });
     Ok(next.run(request).await)
 }
@@ -240,6 +253,17 @@ pub struct AuthUser {
     pub role: String,
     /// Set when the request authenticated via an API key; None for JWT/ticket auth.
     pub api_key_name: Option<String>,
+    /// Id of that API key, when the request authenticated with one.
+    pub api_key_id: Option<String>,
+}
+
+/// Effective permissions of a role-narrowed API key: only what both the
+/// owner and the key's role grant.
+pub fn narrow_permissions(
+    owner: aifw_common::PermissionSet,
+    key_role_bits: u64,
+) -> aifw_common::PermissionSet {
+    aifw_common::PermissionSet::from_bits(owner.to_bits() & key_role_bits)
 }
 
 /// Macro to create a permission-check middleware closure for use with `from_fn`.
@@ -257,6 +281,28 @@ macro_rules! perm_check {
             Ok::<_, axum::http::StatusCode>(next.run(request).await)
         }
     };
+}
+
+#[cfg(test)]
+mod narrow_tests {
+    use super::narrow_permissions;
+    use aifw_common::{Permission, PermissionSet};
+
+    #[test]
+    fn key_role_cannot_exceed_owner() {
+        let owner = PermissionSet::from_permissions(&[Permission::RulesRead]);
+        let role =
+            PermissionSet::from_permissions(&[Permission::RulesRead, Permission::UsersWrite]);
+        let eff = narrow_permissions(owner, role.to_bits());
+        assert!(eff.has(Permission::RulesRead));
+        assert!(!eff.has(Permission::UsersWrite));
+    }
+
+    #[test]
+    fn missing_role_grants_nothing() {
+        let eff = narrow_permissions(PermissionSet::all(), 0);
+        assert_eq!(eff.to_bits(), 0);
+    }
 }
 
 #[cfg(test)]
