@@ -62,6 +62,9 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 axum-test = "21"
+# CLI v2: integration tests drive real `aifw` commands against this router.
+aifw-cli = { path = "../aifw-cli" }
+toml = "0.9"
 async-trait = { workspace = true }
 
 [lints]

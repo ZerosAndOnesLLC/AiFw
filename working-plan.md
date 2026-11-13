@@ -36,13 +36,15 @@ deferred items M5/L5 remain deferred.)
       internal keys hidden, keys can't mint keys, last_used, user delete, totp rate limit
 
 ## Phase 1 — aifw-client crate + CLI foundation
-- [ ] aifw-client: Client, Auth (ApiKey/Session, prefix detection), ClientError, refresh rotation
-- [ ] Pin verifier moved from aifw-core peer_tls (re-exported)
-- [ ] `aifw local cli-key` (root: mint aifw-cli-local key into DB, write cli.key 0600)
-- [ ] CLI: contexts/credentials, login/logout/whoami/context, output (table/json/yaml), prompts, exit codes
-- [ ] pending / apply / confirm
-- [ ] Remove legacy HTTP helpers (cluster.rs, plugins.rs)
-- [ ] Tests: client unit tests + CLI integration harness against in-memory API
+- [x] aifw-client: Client, Auth (ApiKey/Session, prefix detection), ClientError, refresh rotation
+- [x] Pin verifier moved from aifw-core peer_tls (re-exported)
+- [x] `aifw local cli-key` + automatic first-use minting as root (aifw-cli-local key, cli.key 0600)
+- [x] CLI: contexts/credentials, login/logout/whoami/context, output (table/wide/json/yaml),
+      prompts, exit codes; aifw-cli is now lib + thin bin (`aifw_cli::run`)
+- [x] pending / apply / confirm (arm → change → apply → accept; `apply` fails on "Partial reload")
+- [x] Tests: aifw-client unit + mock-server tests; CLI unit tests; API-side integration
+      harness (tests/cli_harness.rs) running real commands against the real router
+- (moved to phase 2) Remove legacy HTTP helpers — they go with porting their command groups
 
 ## Phase 2 — Port existing command groups to the API
 - [ ] rules, nat, geoip, shaper, routes, dns, users

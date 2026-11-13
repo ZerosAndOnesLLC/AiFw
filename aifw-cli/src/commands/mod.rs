@@ -1,15 +1,17 @@
 //! CLI command implementations, one module per `aifw <group>` (#190).
-//! Everything public is re-exported so `main.rs` keeps calling
-//! `commands::<fn>`.
+//! Legacy groups re-export their functions flat (`commands::<fn>`); CLI v2
+//! groups are reached by module path (`commands::session::login`).
 
 mod cluster;
 mod common;
 mod config;
+pub mod context;
 mod dhcp;
 mod dns;
 mod geoip;
 mod ids;
 mod interfaces;
+pub mod local;
 mod logging;
 mod multiwan;
 mod nat;
@@ -17,7 +19,9 @@ mod plugins;
 mod reverse_proxy;
 mod routes;
 mod rules;
+pub mod session;
 mod shaping;
+pub mod staging;
 mod system;
 mod updates;
 mod users;

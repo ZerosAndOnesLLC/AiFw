@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 aifw-common = { workspace = true }
+aifw-client = { workspace = true }
 aifw-pf = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync", "time", "net", "io-util", "fs", "process", "macros"] }
 sqlx = { workspace = true }
