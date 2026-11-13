@@ -120,7 +120,7 @@ enum Commands {
     /// Manage versioned configuration
     Config {
         #[command(subcommand)]
-        action: ConfigAction,
+        action: commands::config::ConfigCmd,
     },
     /// Manage static routes
     Routes {
@@ -176,50 +176,6 @@ enum Commands {
     Cluster {
         #[command(subcommand)]
         action: commands::cluster::ClusterCmd,
-    },
-}
-
-#[derive(Subcommand)]
-enum ConfigAction {
-    /// Show current active config
-    Show,
-    /// Export current config to stdout as JSON
-    Export {
-        /// How to treat secret fields (WireGuard/IPsec keys, CARP passwords,
-        /// TSIG): `redact` (default), `passphrase` (wrap under
-        /// $AIFW_BACKUP_PASSPHRASE or --passphrase-file), or `plain`
-        #[arg(long, default_value = "redact", value_parser = ["redact", "passphrase", "plain"])]
-        secrets: String,
-        /// File whose first line is the backup passphrase (--secrets passphrase)
-        #[arg(long)]
-        passphrase_file: Option<String>,
-    },
-    /// Import config from a JSON file
-    Import {
-        /// Path to JSON config file
-        file: String,
-        /// File whose first line is the passphrase for a passphrase-wrapped
-        /// backup (also read from $AIFW_BACKUP_PASSPHRASE)
-        #[arg(long)]
-        passphrase_file: Option<String>,
-    },
-    /// Show config version history
-    History {
-        /// Number of versions to show
-        #[arg(long, default_value = "20")]
-        limit: i64,
-    },
-    /// Rollback to a specific config version
-    Rollback {
-        /// Version number to rollback to
-        version: i64,
-    },
-    /// Diff two config versions
-    Diff {
-        /// First version
-        v1: i64,
-        /// Second version
-        v2: i64,
     },
 }
 
@@ -377,22 +333,7 @@ async fn dispatch(cli: Cli, ctx: &mut Ctx) -> anyhow::Result<()> {
         },
         Commands::Geoip { action } => commands::geoip::run(ctx, action).await?,
         Commands::Vpn { action } => commands::vpn::run(ctx, action).await?,
-        Commands::Config { action } => match action {
-            ConfigAction::Show => commands::config_show(&cli.db).await?,
-            ConfigAction::Export {
-                secrets,
-                passphrase_file,
-            } => commands::config_export(&cli.db, &secrets, passphrase_file.as_deref()).await?,
-            ConfigAction::Import {
-                file,
-                passphrase_file,
-            } => commands::config_import(&cli.db, &file, passphrase_file.as_deref()).await?,
-            ConfigAction::History { limit } => commands::config_history(&cli.db, limit).await?,
-            ConfigAction::Rollback { version } => {
-                commands::config_rollback(&cli.db, version).await?
-            }
-            ConfigAction::Diff { v1, v2 } => commands::config_diff(&cli.db, v1, v2).await?,
-        },
+        Commands::Config { action } => commands::config::run(ctx, action).await?,
         Commands::Routes { action } => commands::routes::run(ctx, action).await?,
         Commands::Dhcp { action } => commands::dhcp::run(ctx, action).await?,
         Commands::Dns { action } => commands::dns::run(ctx, action).await?,
@@ -420,4 +361,159 @@ async fn dispatch(cli: Cli, ctx: &mut Ctx) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod compat_tests {
+    use super::Cli;
+    use clap::Parser;
+
+    /// Every invocation something outside this crate relies on must keep
+    /// parsing: the maintenance cron (aifw-api/src/updates.rs), the console
+    /// menu (freebsd/overlay/usr/local/sbin/aifw-console), scripts/ha-verify.sh,
+    /// build-update.sh / RELEASE-SIGNING.md, daemon/setup hint strings, the
+    /// installer's closing hints and the documented legacy spellings.
+    #[test]
+    fn external_callers_still_parse() {
+        let calls: &[&[&str]] = &[
+            // maintenance cron + aifw-console
+            &["update", "check"],
+            &["update", "install"],
+            &["update", "os-check"],
+            &["update", "os-install"],
+            // build-update.sh / RELEASE-SIGNING.md
+            &["update", "install", "--from", "/tmp/aifw-update.tar.xz"],
+            &[
+                "update",
+                "install",
+                "--from",
+                "/tmp/x.tar.xz",
+                "--skip-checksum",
+                "--restart",
+            ],
+            &["update", "rollback", "--yes"],
+            &["update", "os-upgrade", "15.1", "--yes"],
+            // scripts/ha-verify.sh
+            &["cluster", "verify", "--json"],
+            // daemon / setup hints, installer hints
+            &["reconcile"],
+            &["reload"],
+            &["rules", "list"],
+            &["status"],
+            // legacy spellings kept for scripts
+            &["rules", "list", "--json"],
+            &["rules", "remove", "x"],
+            &["rules", "add", "--action", "pass", "--log"],
+            &[
+                "nat",
+                "add",
+                "--type",
+                "dnat",
+                "--interface",
+                "em0",
+                "--redirect",
+                "10.0.0.1",
+            ],
+            &[
+                "nat",
+                "add",
+                "--nat-type",
+                "snat",
+                "--interface",
+                "em0",
+                "--redirect",
+                "10.0.0.1",
+            ],
+            &["nat", "list", "--json"],
+            &["nat", "embed", "64:ff9b::", "10.1.2.3"],
+            &["vpn", "wg-add", "--name", "a", "--address", "10.8.0.1/24"],
+            &[
+                "vpn",
+                "wg-peer-add",
+                "--tunnel",
+                "t",
+                "--name",
+                "p",
+                "--pubkey",
+                "k",
+            ],
+            &[
+                "vpn",
+                "ipsec-add",
+                "--name",
+                "a",
+                "--remote",
+                "1.2.3.4",
+                "--psk",
+                "x",
+                "--local-ts",
+                "10.0.0.0/8",
+                "--remote-ts",
+                "10.1.0.0/16",
+            ],
+            &["vpn", "ipsec-status", "--json"],
+            &["vpn", "list", "--json"],
+            &["geoip", "list", "--json"],
+            &["geoip", "database", "--json"],
+            &["queue", "list", "--json"],
+            &["ratelimit", "list", "--json"],
+            &["routes", "list", "--json"],
+            &["dns", "probe", "status"],
+            &["dhcp", "subnets", "--json"],
+            &["users", "list", "--json"],
+            &["users", "add", "--username", "u", "--password", "p"],
+            &["ids", "purge-alerts", "--yes"],
+            &["ids", "retention", "30"],
+            &["syslog", "show", "--json"],
+            &["syslog", "set", "--pf", "true"],
+            &["logrotate", "show", "--json"],
+            &["plugins", "list", "--json"],
+            &["plugins", "status", "--json"],
+            &["reverse-proxy", "routers", "--json"],
+            &["reverse-proxy", "entrypoints", "--json"],
+            &["reverse-proxy", "show-config"],
+            &["cluster", "status", "--json"],
+            &[
+                "cluster",
+                "pfsync",
+                "set",
+                "--sync-interface",
+                "em2",
+                "--defer",
+            ],
+            &["cluster", "maintenance", "on"],
+            &["multiwan", "probe", "gw", "fail"],
+            &[
+                "config",
+                "export",
+                "--secrets",
+                "passphrase",
+                "--passphrase-file",
+                "/tmp/pw",
+            ],
+            &["config", "history", "--limit", "5"],
+            &["config", "rollback", "3"],
+            &["init", "--path", "/tmp/x.db"],
+            &["interfaces"],
+        ];
+        for args in calls {
+            let mut argv = vec!["aifw"];
+            argv.extend_from_slice(args);
+            if let Err(e) = Cli::try_parse_from(&argv) {
+                panic!("`aifw {}` no longer parses:\n{e}", args.join(" "));
+            }
+        }
+    }
+
+    #[test]
+    fn version_flag() {
+        let e = Cli::try_parse_from(["aifw", "--version"]).err().unwrap();
+        assert_eq!(e.kind(), clap::error::ErrorKind::DisplayVersion);
+    }
+
+    #[test]
+    fn command_tree_is_well_formed() {
+        use clap::CommandFactory;
+        Cli::command().debug_assert();
+    }
 }

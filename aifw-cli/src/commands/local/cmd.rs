@@ -18,6 +18,14 @@ pub enum LocalCmd {
     /// Run the updater directly (when the API is down, e.g. to roll back)
     #[command(subcommand)]
     Update(LocalUpdateCmd),
+    /// Export the active config straight from the database, optionally
+    /// with secrets in the clear (the API never hands those out)
+    ConfigExport {
+        #[arg(long, default_value = "redact", value_parser = ["redact", "passphrase", "plain"])]
+        secrets: String,
+        #[arg(long)]
+        passphrase_file: Option<String>,
+    },
     /// Create the database (first boot / recovery)
     Init {
         #[arg(long)]
@@ -86,6 +94,10 @@ pub async fn run(ctx: &mut Ctx, cmd: LocalCmd, db: &std::path::Path) -> anyhow::
             }
         },
         LocalCmd::Status => super::status(db).await,
+        LocalCmd::ConfigExport {
+            secrets,
+            passphrase_file,
+        } => super::config_export(db, &secrets, passphrase_file.as_deref()).await,
         LocalCmd::Reload => super::reload(db).await,
         LocalCmd::Reconcile => super::reconcile(db).await,
         LocalCmd::Init { path } => super::init(path.as_deref().unwrap_or(db)).await,

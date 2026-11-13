@@ -57,7 +57,9 @@ deferred items M5/L5 remain deferred.)
 - [x] multiwan, cluster, reverse-proxy, dhcp (cluster verify --json contract kept; reverse-proxy
       gets CRUD for all 11 collections; service endpoints that 200 with "failed" now exit 1;
       log tails get --follow — phase 4 item done early)
-- [ ] update ✓ (API; old updater kept as `aifw local update` for when the API is down), config
+- [x] update (API; old updater kept as `aifw local update` for when the API is down), config
+      (API; plain-secret export only via `aifw local config-export`); compat test parses every
+      external caller's invocation
 
 ## Phase 3 — New coverage
 - [ ] aliases, schedules, interfaces/vlans
@@ -72,7 +74,9 @@ deferred items M5/L5 remain deferred.)
 - [ ] --context a,b / --all-contexts on read-only commands, merged output, exit 8
 
 ## Phase 6 — `aifw local` + DB-free guard
-- [ ] Move break-glass to commands/local/, guard test, update scanning guard tests
+- [x] Move break-glass to commands/local/ (status/reload/reconcile/init/ratelimit/update/
+      config-export/cli-key), guard test `only_local_touches_the_database_or_pf`, sudoers
+      write_file guard updated (done during phase 2)
 
 ## Phase 7 — Docs and polish
 - [ ] docs/docs/cli.md rewrite, AIFW_TOKEN docs, README, CLAUDE.md, completions + man page

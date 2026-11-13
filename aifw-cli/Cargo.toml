@@ -28,7 +28,6 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 reqwest = { workspace = true, features = ["multipart", "stream"] }
-tokio-util = { version = "0.7", features = ["io"] }
 serde_yaml_ng = "0.10"
 uuid = { workspace = true }
 chrono = { workspace = true }

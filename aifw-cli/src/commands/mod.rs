@@ -1,9 +1,9 @@
 //! CLI command implementations, one module per `aifw <group>` (#190).
-//! Legacy groups re-export their functions flat (`commands::<fn>`); CLI v2
-//! groups are reached by module path (`commands::session::login`).
+//! Each group is a clap enum plus `run()`, reached by module path
+//! (`commands::rules::run`). Only `local` touches the database or pf.
 
 pub mod cluster;
-mod config;
+pub mod config;
 pub mod context;
 pub mod dhcp;
 pub mod dns;
@@ -26,5 +26,3 @@ pub mod system;
 pub mod updates;
 pub mod users;
 pub mod vpn;
-
-pub use config::*;
