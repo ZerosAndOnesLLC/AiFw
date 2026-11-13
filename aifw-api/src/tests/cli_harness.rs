@@ -8,6 +8,7 @@ use std::path::PathBuf;
 pub(super) struct Cli {
     pub base: String,
     pub dir: PathBuf,
+    pub pool: sqlx::SqlitePool,
 }
 
 /// Result of one `aifw` invocation.
@@ -57,6 +58,7 @@ impl Cli {
         let state = crate::create_app_state_in_memory(plain_auth_settings())
             .await
             .unwrap();
+        let pool = state.pool.clone();
         let app = crate::build_router(state, None, "*", false);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -77,6 +79,7 @@ impl Cli {
         let cli = Self {
             base: format!("http://{addr}"),
             dir,
+            pool,
         };
         cli.http()
             .post(cli.url("/auth/register"))

@@ -201,6 +201,7 @@ mod cli_basic;
 mod cli_harness;
 mod cli_nat;
 mod cli_rules;
+mod cli_services;
 mod cli_session;
 mod cluster;
 mod cookies;

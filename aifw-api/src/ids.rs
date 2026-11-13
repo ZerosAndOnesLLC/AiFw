@@ -554,6 +554,21 @@ pub async fn search_rules(
 //
 // Pure SQLite CRUD — direct queries against `ids_suppressions`.
 
+/// Timestamps in `ids_suppressions` are RFC 3339 when written by the API,
+/// but rows that took the column default (`datetime('now')`, e.g. restored
+/// from a backup or written before this fix) are `YYYY-MM-DD HH:MM:SS` UTC.
+/// Rejecting those silently hid every such suppression from the list.
+fn parse_db_timestamp(s: &str) -> Option<chrono::DateTime<Utc>> {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .map(|t| t.with_timezone(&Utc))
+        .ok()
+        .or_else(|| {
+            chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+                .ok()
+                .map(|n| n.and_utc())
+        })
+}
+
 pub async fn list_suppressions(
     State(state): State<AppState>,
     Query(q): Query<PageQuery>,
@@ -580,9 +595,7 @@ pub async fn list_suppressions(
                 sid: sid as u32,
                 suppress_type: SuppressType::from_str(&stype)?,
                 ip_cidr: cidr,
-                created_at: chrono::DateTime::parse_from_rfc3339(&created)
-                    .ok()?
-                    .with_timezone(&Utc),
+                created_at: parse_db_timestamp(&created)?,
             })
         })
         .collect();
@@ -612,12 +625,13 @@ pub async fn create_suppression(
     };
 
     sqlx::query(
-        "INSERT INTO ids_suppressions (id, sid, suppress_type, ip_cidr) VALUES (?, ?, ?, ?)",
+        "INSERT INTO ids_suppressions (id, sid, suppress_type, ip_cidr, created_at) VALUES (?, ?, ?, ?, ?)",
     )
     .bind(suppression.id.to_string())
     .bind(suppression.sid as i64)
     .bind(suppression.suppress_type.to_string())
     .bind(&suppression.ip_cidr)
+    .bind(suppression.created_at.to_rfc3339())
     .execute(&state.pool)
     .await
     .map_err(|_| internal())?;
@@ -707,4 +721,17 @@ pub struct IdsStatsResponse {
     pub flow_count: u64,
     pub flow_reassembly_bytes: u64,
     pub uptime_secs: u64,
+}
+
+#[cfg(test)]
+mod suppression_timestamp_tests {
+    use super::parse_db_timestamp;
+
+    #[test]
+    fn accepts_rfc3339_and_sqlite_default() {
+        assert!(parse_db_timestamp("2026-11-13T16:00:00+00:00").is_some());
+        let t = parse_db_timestamp("2026-11-13 16:00:00").unwrap();
+        assert_eq!(t.to_rfc3339(), "2026-11-13T16:00:00+00:00");
+        assert!(parse_db_timestamp("yesterday").is_none());
+    }
 }

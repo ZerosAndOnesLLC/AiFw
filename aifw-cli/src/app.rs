@@ -80,22 +80,22 @@ enum Commands {
     /// Manage the IDS engine (alerts, retention)
     Ids {
         #[command(subcommand)]
-        action: IdsAction,
+        action: commands::ids::IdsCmd,
     },
     /// Manage remote syslog forwarding
     Syslog {
         #[command(subcommand)]
-        action: SyslogAction,
+        action: commands::logging::SyslogCmd,
     },
     /// View and configure built-in plugins (threat feeds, notifier, …)
     Plugins {
         #[command(subcommand)]
-        action: PluginsAction,
+        action: commands::plugins::PluginsCmd,
     },
     /// Manage rotation of AiFw service logs (newsyslog policy)
     Logrotate {
         #[command(subcommand)]
-        action: LogrotateAction,
+        action: commands::logging::LogrotateCmd,
     },
     /// Manage traffic queues
     Queue {
@@ -115,7 +115,7 @@ enum Commands {
     /// Manage VPN tunnels
     Vpn {
         #[command(subcommand)]
-        action: VpnAction,
+        action: commands::vpn::VpnCmd,
     },
     /// Manage versioned configuration
     Config {
@@ -520,93 +520,6 @@ enum ConfigAction {
 }
 
 #[derive(Subcommand)]
-enum VpnAction {
-    /// Add a WireGuard tunnel
-    WgAdd {
-        /// Tunnel name
-        #[arg(long)]
-        name: String,
-        /// WireGuard interface (e.g., wg0)
-        #[arg(long, default_value = "wg0")]
-        interface: String,
-        /// Listen port
-        #[arg(long, default_value = "51820")]
-        port: u16,
-        /// Tunnel address (e.g., 10.0.0.1/24)
-        #[arg(long)]
-        address: String,
-    },
-    /// Add a peer to a WireGuard tunnel
-    WgPeerAdd {
-        /// Tunnel ID
-        #[arg(long)]
-        tunnel: String,
-        /// Peer name
-        #[arg(long)]
-        name: String,
-        /// Peer public key
-        #[arg(long)]
-        pubkey: String,
-        /// Peer endpoint (host:port)
-        #[arg(long)]
-        endpoint: Option<String>,
-        /// Allowed IPs (comma-separated)
-        #[arg(long, default_value = "0.0.0.0/0")]
-        allowed_ips: String,
-        /// Persistent keepalive interval
-        #[arg(long)]
-        keepalive: Option<u16>,
-    },
-    /// Add an IPsec IKEv2 site-to-site tunnel (PSK auth; use the web
-    /// UI/API for certificate auth)
-    IpsecAdd {
-        /// Tunnel name
-        #[arg(long)]
-        name: String,
-        /// Remote IKE endpoint (IP address or DNS name)
-        #[arg(long)]
-        remote: String,
-        /// Pre-shared key (at least 16 printable characters)
-        #[arg(long)]
-        psk: String,
-        /// Local subnets behind this firewall (comma-separated CIDRs)
-        #[arg(long)]
-        local_ts: String,
-        /// Remote subnets behind the peer (comma-separated CIDRs)
-        #[arg(long)]
-        remote_ts: String,
-        /// Local IKE endpoint address (default: any local address)
-        #[arg(long)]
-        local: Option<String>,
-    },
-    /// Initiate an IPsec tunnel's child SA
-    IpsecStart {
-        /// Tunnel ID
-        id: String,
-    },
-    /// Terminate an IPsec tunnel's IKE SA
-    IpsecStop {
-        /// Tunnel ID
-        id: String,
-    },
-    /// Show live IPsec tunnel status (negotiated state from charon)
-    IpsecStatus {
-        #[arg(long)]
-        json: bool,
-    },
-    /// Remove a VPN tunnel or SA by ID
-    Remove {
-        /// Resource ID
-        id: String,
-    },
-    /// List all VPN tunnels and SAs
-    List {
-        #[arg(long)]
-        json: bool,
-    },
-}
-
-#[derive(Subcommand)]
 enum RateLimitAction {
     /// Add a rate limit rule
     Add {
@@ -718,243 +631,6 @@ enum DhcpAction {
 
 // One variant carries many large optional fields; boxing each variant would
 // add allocator overhead for a CLI command type that lives briefly on the stack.
-#[allow(clippy::large_enum_variant)]
-#[derive(Subcommand)]
-enum IdsAction {
-    /// Delete ALL stored IDS alerts and reclaim the disk space
-    #[command(after_help = "\
-EXAMPLES:
-    aifw ids purge-alerts            # asks for confirmation first
-    aifw ids purge-alerts --yes      # non-interactive (scripts/cron)")]
-    PurgeAlerts {
-        /// Skip the confirmation prompt
-        #[arg(long)]
-        yes: bool,
-    },
-    /// Show or set how long alerts are kept (pruned hourly by aifw-ids)
-    #[command(after_help = "\
-EXAMPLES:
-    aifw ids retention               # show the current setting
-    aifw ids retention 7             # keep one week (the default)
-    aifw ids retention 30            # keep one month")]
-    Retention {
-        /// Days to keep alerts (1-365). Omit to show the current value.
-        days: Option<u32>,
-    },
-}
-
-#[derive(Subcommand)]
-enum PluginsAction {
-    /// List built-in plugins and whether they are enabled
-    List {
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// Show a plugin's settings, their allowed values, and its actions
-    Show {
-        /// Plugin name (see `aifw plugins list`)
-        name: String,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// Enable a plugin (its settings are checked first)
-    Enable {
-        /// Plugin name
-        name: String,
-    },
-    /// Disable a plugin; its pf rules and table contents are removed
-    Disable {
-        /// Plugin name
-        name: String,
-    },
-    /// Change settings — only the keys you pass change
-    #[command(after_help = "\
-EXAMPLES:
-    # Refresh threat feeds every 6 hours from two lists
-    aifw plugins set threat-feeds refresh_hours=6 feeds=spamhaus-drop,feodo
-
-    # Never block an upstream partner's network
-    aifw plugins set threat-feeds allowlist=198.51.100.0/24
-
-    # Send notifications to an ntfy topic (secrets go through --secret)
-    aifw plugins set notifier --secret ntfy_url=https://ntfy.sh/my-topic
-
-    # Read a secret from stdin so it stays out of shell history and ps
-    printf '%s' \"$TOKEN\" | aifw plugins set notifier --secret-stdin ntfy_token
-
-    # Back to the default
-    aifw plugins set threat-feeds --unset refresh_hours")]
-    Set {
-        /// Plugin name
-        name: String,
-        /// Settings as key=value (lists are comma-separated)
-        values: Vec<String>,
-        /// Secret settings as key=value (repeatable)
-        #[arg(long = "secret", value_name = "KEY=VALUE")]
-        secrets: Vec<String>,
-        /// Secret setting whose value is read from stdin (first line)
-        #[arg(long = "secret-stdin", value_name = "KEY")]
-        secret_stdin: Option<String>,
-        /// Reset a setting to its default / clear a secret (repeatable)
-        #[arg(long = "unset", value_name = "KEY")]
-        unset: Vec<String>,
-    },
-    /// Forget all settings and secrets and disable the plugin
-    Reset {
-        /// Plugin name
-        name: String,
-    },
-    /// Runtime state, last error and live status (asks the running API)
-    Status {
-        /// Plugin name; all plugins when omitted
-        name: Option<String>,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// A plugin's activity log, newest first (asks the running API)
-    Logs {
-        /// Plugin name
-        name: String,
-        /// Entries to show
-        #[arg(long, default_value_t = 50)]
-        limit: usize,
-        /// Minimum level: info, warn or error
-        #[arg(long, default_value = "info")]
-        level: String,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// Run a plugin action, e.g. `refresh` or `test` (asks the running API)
-    #[command(after_help = "\
-EXAMPLES:
-    aifw plugins run threat-feeds refresh
-    aifw plugins run threat-feeds lookup ip=203.0.113.9
-    aifw plugins run notifier test channel=ntfy")]
-    Run {
-        /// Plugin name
-        name: String,
-        /// Action id (see `aifw plugins show NAME`)
-        action: String,
-        /// Action arguments as key=value
-        args: Vec<String>,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-}
-
-#[derive(Subcommand)]
-enum LogrotateAction {
-    /// Show the rotation policy and the current size of every managed log
-    Show {
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// Update the policy — only the flags you pass change
-    #[command(after_help = "\
-EXAMPLES:
-    # Rotate at 20 MB, keep 5 compressed generations
-    aifw logrotate set --max-size 20 --keep 5
-
-    # Switch rotated logs to zstd (gzip, bzip2, xz, zstd, none)
-    aifw logrotate set --compression zstd")]
-    Set {
-        /// Rotate a log once it exceeds this many MB (1-500)
-        #[arg(long, value_name = "MB")]
-        max_size: Option<u32>,
-        /// Rotated generations to keep (0-50)
-        #[arg(long)]
-        keep: Option<u32>,
-        /// Compression for rotated generations: gzip, bzip2, xz, zstd, none
-        #[arg(long)]
-        compression: Option<String>,
-    },
-    /// Rotate now: one log by path, or every managed log that is over its limit
-    Rotate {
-        /// Path of a managed log to force-rotate regardless of size
-        #[arg(long)]
-        path: Option<String>,
-    },
-}
-
-#[derive(Subcommand)]
-enum SyslogAction {
-    /// Show the current remote syslog configuration
-    Show {
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// Enable remote syslog forwarding (requires a host to be set)
-    Enable,
-    /// Disable remote syslog forwarding
-    Disable,
-    /// Update settings — only the flags you pass change
-    #[command(after_help = "\
-EXAMPLES:
-    # Point at a syslog server and enable pf log forwarding
-    aifw syslog set --host 192.168.1.10 --port 514 --pf true
-    aifw syslog enable
-
-    # Switch to TCP with RFC 5424 framing on facility local3
-    aifw syslog set --transport tcp --format rfc5424 --facility local3
-
-    # Forward everything, app logs at warn and above
-    aifw syslog set --pf true --ids true --app true --app-min-level warn")]
-    Set {
-        /// Syslog server hostname or IP
-        #[arg(long)]
-        host: Option<String>,
-        /// Syslog server port (default 514)
-        #[arg(long)]
-        port: Option<u16>,
-        /// Transport: udp or tcp
-        #[arg(long)]
-        transport: Option<String>,
-        /// Message format: rfc3164 (BSD) or rfc5424
-        #[arg(long)]
-        format: Option<String>,
-        /// Facility name (kern, daemon, auth, local0-local7, ...) or number 0-23
-        #[arg(long)]
-        facility: Option<String>,
-        /// HOSTNAME field override; pass an empty string for the system hostname
-        #[arg(long)]
-        hostname: Option<String>,
-        /// Forward pf packet logs (true/false)
-        #[arg(long)]
-        pf: Option<bool>,
-        /// Forward IDS alerts (true/false)
-        #[arg(long)]
-        ids: Option<bool>,
-        /// Forward application logs (true/false)
-        #[arg(long)]
-        app: Option<bool>,
-        /// Minimum app-log level to forward: error, warn, info, or debug
-        #[arg(long)]
-        app_min_level: Option<String>,
-        /// Stop writing local log files while forwarding is active (true/false)
-        #[arg(long)]
-        disable_local: Option<bool>,
-    },
-    /// Send a test message using the saved config (or --host/--port overrides)
-    #[command(after_help = "\
-EXAMPLES:
-    aifw syslog test                          # use the saved configuration
-    aifw syslog test --host 10.0.0.9 --port 5514")]
-    Test {
-        /// Override the target host for this test only
-        #[arg(long)]
-        host: Option<String>,
-        /// Override the target port for this test only
-        #[arg(long)]
-        port: Option<u16>,
-    },
-}
 
 /// Parse `args` and run the command, writing to `io`. Returns the exit code.
 pub async fn run<I, T>(args: I, io: Io, env: Env) -> i32
@@ -1023,115 +699,10 @@ async fn dispatch(cli: Cli, ctx: &mut Ctx) -> anyhow::Result<()> {
             commands::local::init(path.as_deref().unwrap_or(&cli.db)).await?;
         }
         Commands::Rules { action } => commands::rules::run(ctx, action).await?,
-        Commands::Ids { action } => match action {
-            IdsAction::PurgeAlerts { yes } => {
-                commands::ids_purge_alerts(&cli.db, yes).await?;
-            }
-            IdsAction::Retention { days } => {
-                commands::ids_retention(&cli.db, days).await?;
-            }
-        },
-        Commands::Plugins { action } => match action {
-            PluginsAction::List { json } => commands::plugins_list(&cli.db, json).await?,
-            PluginsAction::Show { name, json } => {
-                commands::plugins_show(&cli.db, &name, json).await?
-            }
-            PluginsAction::Enable { name } => {
-                commands::plugins_enable(&cli.db, &name, true).await?
-            }
-            PluginsAction::Disable { name } => {
-                commands::plugins_enable(&cli.db, &name, false).await?
-            }
-            PluginsAction::Set {
-                name,
-                values,
-                secrets,
-                secret_stdin,
-                unset,
-            } => {
-                commands::plugins_set(
-                    &cli.db,
-                    &name,
-                    &values,
-                    &secrets,
-                    secret_stdin.as_deref(),
-                    &unset,
-                )
-                .await?
-            }
-            PluginsAction::Reset { name } => commands::plugins_reset(&cli.db, &name).await?,
-            PluginsAction::Status { name, json } => {
-                commands::plugins_status(name.as_deref(), json).await?
-            }
-            PluginsAction::Logs {
-                name,
-                limit,
-                level,
-                json,
-            } => commands::plugins_logs(&name, limit, &level, json).await?,
-            PluginsAction::Run {
-                name,
-                action,
-                args,
-                json,
-            } => commands::plugins_run(&name, &action, &args, json).await?,
-        },
-        Commands::Logrotate { action } => match action {
-            LogrotateAction::Show { json } => commands::logrotate_show(&cli.db, json).await?,
-            LogrotateAction::Set {
-                max_size,
-                keep,
-                compression,
-            } => commands::logrotate_set(&cli.db, max_size, keep, compression.as_deref()).await?,
-            LogrotateAction::Rotate { path } => {
-                commands::logrotate_rotate(&cli.db, path.as_deref()).await?
-            }
-        },
-        Commands::Syslog { action } => match action {
-            SyslogAction::Show { json } => {
-                commands::syslog_show(&cli.db, json).await?;
-            }
-            SyslogAction::Enable => {
-                commands::syslog_enable(&cli.db, true).await?;
-            }
-            SyslogAction::Disable => {
-                commands::syslog_enable(&cli.db, false).await?;
-            }
-            SyslogAction::Set {
-                host,
-                port,
-                transport,
-                format,
-                facility,
-                hostname,
-                pf,
-                ids,
-                app,
-                app_min_level,
-                disable_local,
-            } => {
-                commands::syslog_set(
-                    &cli.db,
-                    commands::SyslogSetOpts {
-                        host,
-                        port,
-                        transport,
-                        format,
-                        facility,
-                        hostname,
-                        pf,
-                        ids,
-                        app,
-                        app_min_level,
-                        disable_local,
-                    },
-                )
-                .await?;
-            }
-            SyslogAction::Test { host, port } => {
-                commands::syslog_test(&cli.db, host, port).await?;
-            }
-        },
+        Commands::Ids { action } => commands::ids::run(ctx, action).await?,
+        Commands::Plugins { action } => commands::plugins::run(ctx, action).await?,
+        Commands::Logrotate { action } => commands::logging::logrotate(ctx, action).await?,
+        Commands::Syslog { action } => commands::logging::syslog(ctx, action).await?,
         Commands::Nat { action } => commands::nat::run(ctx, action).await?,
         Commands::Queue { action } => commands::shaping::run(ctx, action).await?,
         Commands::Ratelimit { action } => match action {
@@ -1166,69 +737,7 @@ async fn dispatch(cli: Cli, ctx: &mut Ctx) -> anyhow::Result<()> {
             }
         },
         Commands::Geoip { action } => commands::geoip::run(ctx, action).await?,
-        Commands::Vpn { action } => match action {
-            VpnAction::WgAdd {
-                name,
-                interface,
-                port,
-                address,
-            } => {
-                commands::vpn_wg_add(&cli.db, &name, &interface, port, &address).await?;
-            }
-            VpnAction::WgPeerAdd {
-                tunnel,
-                name,
-                pubkey,
-                endpoint,
-                allowed_ips,
-                keepalive,
-            } => {
-                commands::vpn_wg_peer_add(
-                    &cli.db,
-                    &tunnel,
-                    &name,
-                    &pubkey,
-                    endpoint.as_deref(),
-                    &allowed_ips,
-                    keepalive,
-                )
-                .await?;
-            }
-            VpnAction::IpsecAdd {
-                name,
-                remote,
-                psk,
-                local_ts,
-                remote_ts,
-                local,
-            } => {
-                commands::vpn_ipsec_add(
-                    &cli.db,
-                    &name,
-                    &remote,
-                    &psk,
-                    &local_ts,
-                    &remote_ts,
-                    local.as_deref(),
-                )
-                .await?;
-            }
-            VpnAction::IpsecStart { id } => {
-                commands::vpn_ipsec_start(&cli.db, &id).await?;
-            }
-            VpnAction::IpsecStop { id } => {
-                commands::vpn_ipsec_stop(&cli.db, &id).await?;
-            }
-            VpnAction::IpsecStatus { json } => {
-                commands::vpn_ipsec_status(&cli.db, json).await?;
-            }
-            VpnAction::Remove { id } => {
-                commands::vpn_remove(&cli.db, &id).await?;
-            }
-            VpnAction::List { json } => {
-                commands::vpn_list(&cli.db, json).await?;
-            }
-        },
+        Commands::Vpn { action } => commands::vpn::run(ctx, action).await?,
         Commands::Config { action } => match action {
             ConfigAction::Show => commands::config_show(&cli.db).await?,
             ConfigAction::Export {

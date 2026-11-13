@@ -51,7 +51,9 @@ deferred items M5/L5 remain deferred.)
       ratelimit/reconcile/init + break-glass status/reload moved under commands/local —
       no API for them; fixed: user PUT/DELETE rejected API keys, NAT hint misfire,
       geoip import multi-file upload)
-- [ ] vpn wg, ids, plugins, syslog, logrotate
+- [x] vpn wg, ids, plugins, syslog, logrotate (vpn also covers ipsec tunnels — phase 3 item
+      done early; ids gains config/alerts/rulesets/rules/suppressions; fixed: API hid every
+      IDS suppression whose created_at used the column default)
 - [ ] multiwan, cluster, reverse-proxy, dhcp
 - [ ] update, config (back-compat tests for every external caller)
 
