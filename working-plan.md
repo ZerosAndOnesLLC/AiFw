@@ -54,8 +54,10 @@ deferred items M5/L5 remain deferred.)
 - [x] vpn wg, ids, plugins, syslog, logrotate (vpn also covers ipsec tunnels — phase 3 item
       done early; ids gains config/alerts/rulesets/rules/suppressions; fixed: API hid every
       IDS suppression whose created_at used the column default)
-- [ ] multiwan, cluster, reverse-proxy, dhcp
-- [ ] update, config (back-compat tests for every external caller)
+- [x] multiwan, cluster, reverse-proxy, dhcp (cluster verify --json contract kept; reverse-proxy
+      gets CRUD for all 11 collections; service endpoints that 200 with "failed" now exit 1;
+      log tails get --follow — phase 4 item done early)
+- [ ] update ✓ (API; old updater kept as `aifw local update` for when the API is down), config
 
 ## Phase 3 — New coverage
 - [ ] aliases, schedules, interfaces/vlans

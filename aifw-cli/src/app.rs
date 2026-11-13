@@ -135,7 +135,7 @@ enum Commands {
     /// Manage DHCP server
     Dhcp {
         #[command(subcommand)]
-        action: DhcpAction,
+        action: commands::dhcp::DhcpCmd,
     },
     /// Manage users
     Users {
@@ -145,12 +145,12 @@ enum Commands {
     /// Manage the reverse proxy (TrafficCop)
     ReverseProxy {
         #[command(subcommand)]
-        action: ReverseProxyAction,
+        action: commands::reverse_proxy::ReverseProxyCmd,
     },
     /// Manage AiFw and OS updates
     Update {
         #[command(subcommand)]
-        action: UpdateAction,
+        action: commands::updates::UpdateCmd,
     },
     /// Show network interfaces
     Interfaces,
@@ -170,309 +170,13 @@ enum Commands {
     /// Multi-WAN: routing instances, gateways, groups, policies, leaks
     Multiwan {
         #[command(subcommand)]
-        action: MultiwanAction,
+        action: commands::multiwan::MultiwanCmd,
     },
     /// Cluster / HA operations
     Cluster {
         #[command(subcommand)]
-        action: ClusterAction,
+        action: commands::cluster::ClusterCmd,
     },
-}
-
-#[derive(Subcommand)]
-enum MultiwanAction {
-    /// List routing instances (FIBs)
-    Instances,
-    /// List gateways with live health state
-    Gateways,
-    /// List gateway groups
-    Groups,
-    /// List policy-routing rules
-    Policies,
-    /// List route leaks
-    Leaks,
-    /// Show live pf flows with iface/FIB
-    Flows,
-    /// Show current pf state table count
-    FibInfo,
-    /// Recompile and apply all multi-WAN pf anchors
-    Apply,
-    /// Seed management-escape leaks for non-default instances
-    SeedMgmt,
-    /// Force a manual probe outcome for a gateway (for testing)
-    Probe {
-        /// Gateway UUID
-        id: String,
-        /// "ok" or "fail"
-        #[arg(default_value = "ok")]
-        outcome: String,
-    },
-    /// Export full multi-WAN config as JSON
-    Export,
-    /// Import multi-WAN config from a JSON file
-    Import { file: String },
-}
-
-#[derive(Subcommand)]
-enum ClusterAction {
-    /// Show this node's cluster status
-    Status {
-        #[arg(long)]
-        json: bool,
-    },
-    /// CARP VIP operations
-    Carp {
-        #[command(subcommand)]
-        action: CarpAction,
-    },
-    /// pfsync configuration
-    Pfsync {
-        #[command(subcommand)]
-        action: PfsyncAction,
-    },
-    /// Cluster nodes
-    Nodes {
-        #[command(subcommand)]
-        action: NodesAction,
-    },
-    /// Health checks
-    Health {
-        #[command(subcommand)]
-        action: HealthAction,
-    },
-    /// Clear this node's operator demotion and maintenance mode; with
-    /// preemption on, it retakes MASTER if its advskew beats the peer's
-    Promote,
-    /// Demote this node so the peer takes the VIPs (until promote or reboot)
-    Demote,
-    /// Persistent CARP maintenance mode (survives reboot)
-    Maintenance {
-        #[command(subcommand)]
-        action: MaintenanceAction,
-    },
-    /// Force a snapshot pull from peer
-    Sync,
-    /// Run local-side verification checks. Exits 0 on healthy, non-zero on failure.
-    Verify {
-        #[arg(long)]
-        json: bool,
-    },
-}
-
-#[derive(Subcommand)]
-enum MaintenanceAction {
-    /// Enter maintenance: stay BACKUP, across reboots, until turned off
-    On,
-    /// Leave maintenance mode
-    Off,
-}
-
-#[derive(Subcommand)]
-enum CarpAction {
-    /// List CARP VIPs
-    List,
-    /// Show a single CARP VIP
-    Show { id: String },
-    /// Create a CARP VIP
-    Add {
-        #[arg(long)]
-        vhid: u8,
-        #[arg(long)]
-        interface: String,
-        /// Virtual IP in addr/prefix form, e.g. 192.0.2.1/24
-        #[arg(long)]
-        vip: String,
-        #[arg(long)]
-        password: String,
-    },
-    /// Remove a CARP VIP
-    Remove { id: String },
-}
-
-#[derive(Subcommand)]
-enum PfsyncAction {
-    /// Get pfsync configuration
-    Get,
-    /// Set pfsync configuration
-    Set {
-        #[arg(long)]
-        sync_interface: String,
-        #[arg(long)]
-        sync_peer: Option<String>,
-        #[arg(long, default_value_t = true)]
-        defer: bool,
-        #[arg(long, default_value = "conservative")]
-        latency_profile: String,
-        #[arg(long, default_value_t = false)]
-        dhcp_link: bool,
-        /// Legacy (#486), ignored: since #712 WireGuard always follows the CARP role
-        #[arg(long, default_value_t = false)]
-        wg_deconfigure_on_backup: bool,
-    },
-}
-
-#[derive(Subcommand)]
-enum NodesAction {
-    /// List cluster nodes
-    List,
-    /// Show a cluster node
-    Show { id: String },
-    /// Add a cluster node
-    Add {
-        #[arg(long)]
-        name: String,
-        #[arg(long)]
-        address: String,
-        /// Node role: primary, secondary, or standalone
-        #[arg(long, default_value = "secondary")]
-        role: String,
-        /// Port the peer's API listens on (default 8080)
-        #[arg(long)]
-        api_port: Option<u16>,
-    },
-    /// Remove a cluster node
-    Remove { id: String },
-    /// Reset (or set) the pinned TLS certificate fingerprint of a peer.
-    /// Without --fingerprint the pin is cleared and re-learned on next contact.
-    #[command(after_help = "\
-Peer HTTPS calls are pinned to the certificate seen on first contact. If a
-peer's API certificate changed by hand (self-signed regeneration, manual
-import), replication logs 'TLS pin mismatch' until you re-pin it here.")]
-    Repin {
-        id: String,
-        /// SHA-256 fingerprint of the peer's certificate (64 hex chars, colons ok)
-        #[arg(long)]
-        fingerprint: Option<String>,
-    },
-}
-
-#[derive(Subcommand)]
-enum HealthAction {
-    /// List health checks
-    List,
-    /// Add a health check
-    Add {
-        #[arg(long)]
-        name: String,
-        /// Check type: ping, tcp_port, http_get, pf_status
-        #[arg(long)]
-        check_type: String,
-        #[arg(long)]
-        target: String,
-        #[arg(long, default_value_t = 10)]
-        interval_secs: u32,
-    },
-    /// Remove a health check
-    Remove { id: String },
-    /// Trigger an immediate probe of all enabled health checks
-    Run,
-}
-
-#[derive(Subcommand)]
-enum UpdateAction {
-    /// Check for AiFw firmware update from GitHub
-    Check {
-        /// Include pre-releases (test channel), not just stable releases.
-        #[arg(long)]
-        pre: bool,
-    },
-    /// Download and install AiFw firmware update.
-    ///
-    /// Does NOT restart services automatically. Run `aifw update restart`
-    /// (or pass --restart) once you're ready for the brief outage.
-    ///
-    /// Pass `--from <path>` to install from a local .tar.xz tarball instead of
-    /// fetching the latest GitHub release.  A sibling .sha256 sidecar is
-    /// expected unless --skip-checksum is also passed.
-    Install {
-        /// Restart services immediately after install completes, skipping
-        /// the confirmation prompt. Useful for scripts/cron.
-        #[arg(long)]
-        restart: bool,
-        /// Assume "yes" to the restart prompt. Alias for --restart.
-        #[arg(short = 'y', long)]
-        yes: bool,
-        /// Install from a local tarball instead of fetching the latest
-        /// GitHub release.  Path must be a .tar.xz file; a sibling
-        /// .sha256 file is expected unless --skip-checksum is passed.
-        #[arg(long)]
-        from: Option<std::path::PathBuf>,
-        /// Skip checksum verification (use only when the .sha256 sidecar
-        /// is unavailable).
-        #[arg(long)]
-        skip_checksum: bool,
-        /// Include pre-releases (test channel) when fetching from GitHub.
-        /// Ignored with --from.
-        #[arg(long)]
-        pre: bool,
-    },
-    /// Rollback to previous AiFw firmware version.
-    ///
-    /// Same restart semantics as `install`.
-    Rollback {
-        #[arg(long)]
-        restart: bool,
-        #[arg(short = 'y', long)]
-        yes: bool,
-    },
-    /// Restart all AiFw services to activate a previously installed update.
-    Restart,
-    /// Reboot the system (full reboot via shutdown -r +1). Recommended
-    /// after updates that change service-supervision tooling.
-    Reboot,
-    /// Check for OS and package updates
-    OsCheck,
-    /// Install OS and package updates
-    OsInstall,
-    /// Upgrade FreeBSD to a newer release (e.g. 15.1). Downloads and
-    /// stages the release, installs the new kernel, then asks for a
-    /// reboot; the remaining install finishes automatically after boot.
-    /// Required before installing an AiFw release built on a newer OS.
-    OsUpgrade {
-        /// Target release, e.g. "15.1"
-        target: String,
-        /// Skip the confirmation prompt
-        #[arg(short, long)]
-        yes: bool,
-    },
-}
-
-#[derive(Subcommand)]
-enum ReverseProxyAction {
-    /// Show reverse proxy status
-    Status,
-    /// Start the reverse proxy
-    Start,
-    /// Stop the reverse proxy
-    Stop,
-    /// Restart the reverse proxy
-    Restart,
-    /// Validate the generated config
-    Validate,
-    /// Generate config, write YAML, and reload
-    Apply,
-    /// List HTTP routers
-    Routers {
-        #[arg(long)]
-        json: bool,
-    },
-    /// List HTTP services
-    Services {
-        #[arg(long)]
-        json: bool,
-    },
-    /// List HTTP middlewares
-    Middlewares {
-        #[arg(long)]
-        json: bool,
-    },
-    /// List entrypoints
-    Entrypoints {
-        #[arg(long)]
-        json: bool,
-    },
-    /// Print the generated YAML config
-    ShowConfig,
 }
 
 #[derive(Subcommand)]
@@ -562,71 +266,6 @@ enum RateLimitAction {
         #[arg(long)]
         json: bool,
     },
-}
-
-#[derive(Subcommand)]
-enum DhcpAction {
-    /// Show DHCP server status
-    Status,
-    /// Start DHCP server
-    Start,
-    /// Stop DHCP server
-    Stop,
-    /// Restart DHCP server
-    Restart,
-    /// List DHCP subnets
-    Subnets {
-        #[arg(long)]
-        json: bool,
-    },
-    /// Add a DHCP subnet
-    SubnetAdd {
-        #[arg(long)]
-        network: String,
-        #[arg(long)]
-        pool_start: String,
-        #[arg(long)]
-        pool_end: String,
-        #[arg(long)]
-        gateway: String,
-        #[arg(long)]
-        dns: Option<String>,
-        #[arg(long)]
-        domain: Option<String>,
-        #[arg(long)]
-        lease_time: Option<u32>,
-        #[arg(long)]
-        desc: Option<String>,
-    },
-    /// Remove a DHCP subnet
-    SubnetRemove { id: String },
-    /// List DHCP reservations (static leases)
-    Reservations {
-        #[arg(long)]
-        json: bool,
-    },
-    /// Add a DHCP reservation
-    ReservationAdd {
-        #[arg(long)]
-        mac: String,
-        #[arg(long)]
-        ip: String,
-        #[arg(long)]
-        hostname: Option<String>,
-        #[arg(long)]
-        subnet: Option<String>,
-        #[arg(long)]
-        desc: Option<String>,
-    },
-    /// Remove a DHCP reservation
-    ReservationRemove { id: String },
-    /// Show active DHCP leases
-    Leases {
-        #[arg(long)]
-        json: bool,
-    },
-    /// Apply DHCP config (write + restart rDHCP)
-    Apply,
 }
 
 // One variant carries many large optional fields; boxing each variant would
@@ -755,114 +394,11 @@ async fn dispatch(cli: Cli, ctx: &mut Ctx) -> anyhow::Result<()> {
             ConfigAction::Diff { v1, v2 } => commands::config_diff(&cli.db, v1, v2).await?,
         },
         Commands::Routes { action } => commands::routes::run(ctx, action).await?,
-        Commands::Dhcp { action } => match action {
-            DhcpAction::Status => commands::dhcp_status(&cli.db).await?,
-            DhcpAction::Start => {
-                commands::service_ctl("rdhcpd", "start")?;
-                println!("DHCP started");
-            }
-            DhcpAction::Stop => {
-                commands::service_ctl("rdhcpd", "stop")?;
-                println!("DHCP stopped");
-            }
-            DhcpAction::Restart => {
-                commands::service_ctl("rdhcpd", "restart")?;
-                println!("DHCP restarted");
-            }
-            DhcpAction::Subnets { json } => commands::dhcp_subnets(&cli.db, json).await?,
-            DhcpAction::SubnetAdd {
-                network,
-                pool_start,
-                pool_end,
-                gateway,
-                dns,
-                domain,
-                lease_time,
-                desc,
-            } => {
-                commands::dhcp_subnet_add(
-                    &cli.db,
-                    &network,
-                    &pool_start,
-                    &pool_end,
-                    &gateway,
-                    dns.as_deref(),
-                    domain.as_deref(),
-                    lease_time,
-                    desc.as_deref(),
-                )
-                .await?;
-            }
-            DhcpAction::SubnetRemove { id } => commands::dhcp_subnet_remove(&cli.db, &id).await?,
-            DhcpAction::Reservations { json } => commands::dhcp_reservations(&cli.db, json).await?,
-            DhcpAction::ReservationAdd {
-                mac,
-                ip,
-                hostname,
-                subnet,
-                desc,
-            } => {
-                commands::dhcp_reservation_add(
-                    &cli.db,
-                    &mac,
-                    &ip,
-                    hostname.as_deref(),
-                    subnet.as_deref(),
-                    desc.as_deref(),
-                )
-                .await?;
-            }
-            DhcpAction::ReservationRemove { id } => {
-                commands::dhcp_reservation_remove(&cli.db, &id).await?
-            }
-            DhcpAction::Leases { json } => commands::dhcp_leases(json).await?,
-            DhcpAction::Apply => commands::dhcp_apply(&cli.db).await?,
-        },
+        Commands::Dhcp { action } => commands::dhcp::run(ctx, action).await?,
         Commands::Dns { action } => commands::dns::run(ctx, action).await?,
         Commands::Users { action } => commands::users::run(ctx, action).await?,
-        Commands::ReverseProxy { action } => match action {
-            ReverseProxyAction::Status => commands::rp_status(&cli.db).await?,
-            ReverseProxyAction::Start => commands::rp_start().await?,
-            ReverseProxyAction::Stop => commands::rp_stop().await?,
-            ReverseProxyAction::Restart => commands::rp_restart().await?,
-            ReverseProxyAction::Validate => commands::rp_validate(&cli.db).await?,
-            ReverseProxyAction::Apply => commands::rp_apply(&cli.db).await?,
-            ReverseProxyAction::Routers { json } => commands::rp_routers(&cli.db, json).await?,
-            ReverseProxyAction::Services { json } => commands::rp_services(&cli.db, json).await?,
-            ReverseProxyAction::Middlewares { json } => {
-                commands::rp_middlewares(&cli.db, json).await?
-            }
-            ReverseProxyAction::Entrypoints { json } => {
-                commands::rp_entrypoints(&cli.db, json).await?
-            }
-            ReverseProxyAction::ShowConfig => commands::rp_show_config(&cli.db).await?,
-        },
-        Commands::Update { action } => match action {
-            UpdateAction::Check { pre } => commands::update_check(pre).await?,
-            UpdateAction::Install {
-                restart,
-                yes,
-                from,
-                skip_checksum,
-                pre,
-            } => {
-                if let Some(path) = from {
-                    commands::update_install_local(path, skip_checksum, restart || yes).await?
-                } else {
-                    commands::update_install(&cli.db, restart || yes, pre).await?
-                }
-            }
-            UpdateAction::Rollback { restart, yes } => {
-                commands::update_rollback(restart || yes).await?
-            }
-            UpdateAction::Restart => commands::update_restart().await?,
-            UpdateAction::Reboot => commands::update_reboot().await?,
-            UpdateAction::OsCheck => commands::update_os_check().await?,
-            UpdateAction::OsInstall => commands::update_os_install().await?,
-            UpdateAction::OsUpgrade { target, yes } => {
-                commands::update_os_upgrade(&target, yes).await?
-            }
-        },
+        Commands::ReverseProxy { action } => commands::reverse_proxy::run(ctx, action).await?,
+        Commands::Update { action } => commands::updates::run(ctx, action).await?,
         Commands::Interfaces => {
             commands::interfaces::run(ctx).await?;
         }
@@ -879,91 +415,8 @@ async fn dispatch(cli: Cli, ctx: &mut Ctx) -> anyhow::Result<()> {
         Commands::Reconcile => {
             commands::local::reconcile(&cli.db).await?;
         }
-        Commands::Multiwan { action } => match action {
-            MultiwanAction::Instances => commands::multiwan_instances(&cli.db).await?,
-            MultiwanAction::Gateways => commands::multiwan_gateways(&cli.db).await?,
-            MultiwanAction::Groups => commands::multiwan_groups(&cli.db).await?,
-            MultiwanAction::Policies => commands::multiwan_policies(&cli.db).await?,
-            MultiwanAction::Leaks => commands::multiwan_leaks(&cli.db).await?,
-            MultiwanAction::Flows => commands::multiwan_flows().await?,
-            MultiwanAction::FibInfo => commands::multiwan_fib_info().await?,
-            MultiwanAction::Apply => commands::multiwan_apply(&cli.db).await?,
-            MultiwanAction::SeedMgmt => commands::multiwan_seed_mgmt(&cli.db).await?,
-            MultiwanAction::Probe { id, outcome } => {
-                commands::multiwan_probe(&cli.db, &id, &outcome).await?
-            }
-            MultiwanAction::Export => commands::multiwan_export(&cli.db).await?,
-            MultiwanAction::Import { file } => commands::multiwan_import(&cli.db, &file).await?,
-        },
-        Commands::Cluster { action } => match action {
-            ClusterAction::Status { json } => commands::cluster_status(json).await?,
-            ClusterAction::Carp { action } => match action {
-                CarpAction::List => commands::cluster_carp_list().await?,
-                CarpAction::Show { id } => commands::cluster_carp_show(&id).await?,
-                CarpAction::Add {
-                    vhid,
-                    interface,
-                    vip,
-                    password,
-                } => commands::cluster_carp_add(vhid, &interface, &vip, &password).await?,
-                CarpAction::Remove { id } => commands::cluster_carp_remove(&id).await?,
-            },
-            ClusterAction::Pfsync { action } => match action {
-                PfsyncAction::Get => commands::cluster_pfsync_get().await?,
-                PfsyncAction::Set {
-                    sync_interface,
-                    sync_peer,
-                    defer,
-                    latency_profile,
-                    dhcp_link,
-                    wg_deconfigure_on_backup,
-                } => {
-                    commands::cluster_pfsync_set(
-                        &sync_interface,
-                        sync_peer.as_deref(),
-                        defer,
-                        &latency_profile,
-                        dhcp_link,
-                        wg_deconfigure_on_backup,
-                    )
-                    .await?
-                }
-            },
-            ClusterAction::Nodes { action } => match action {
-                NodesAction::List => commands::cluster_nodes_list().await?,
-                NodesAction::Show { id } => commands::cluster_nodes_show(&id).await?,
-                NodesAction::Add {
-                    name,
-                    address,
-                    role,
-                    api_port,
-                } => commands::cluster_nodes_add(&name, &address, &role, api_port).await?,
-                NodesAction::Remove { id } => commands::cluster_nodes_remove(&id).await?,
-                NodesAction::Repin { id, fingerprint } => {
-                    commands::cluster_nodes_repin(&id, fingerprint.as_deref()).await?
-                }
-            },
-            ClusterAction::Health { action } => match action {
-                HealthAction::List => commands::cluster_health_list().await?,
-                HealthAction::Add {
-                    name,
-                    check_type,
-                    target,
-                    interval_secs,
-                } => {
-                    commands::cluster_health_add(&name, &check_type, &target, interval_secs).await?
-                }
-                HealthAction::Remove { id } => commands::cluster_health_remove(&id).await?,
-                HealthAction::Run => commands::cluster_health_run().await?,
-            },
-            ClusterAction::Promote => commands::cluster_promote().await?,
-            ClusterAction::Demote => commands::cluster_demote().await?,
-            ClusterAction::Maintenance { action } => {
-                commands::cluster_maintenance(matches!(action, MaintenanceAction::On)).await?
-            }
-            ClusterAction::Sync => commands::cluster_sync().await?,
-            ClusterAction::Verify { json } => return commands::cluster_verify(json).await,
-        },
+        Commands::Multiwan { action } => commands::multiwan::run(ctx, action).await?,
+        Commands::Cluster { action } => commands::cluster::run(ctx, action).await?,
     }
 
     Ok(())

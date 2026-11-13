@@ -49,7 +49,9 @@ impl ClientError {
     /// bodies are `{"error": ".."}` or `{"message": ".."}`; many handlers
     /// return a bare status, in which case the request line is the message.
     pub fn from_status(status: StatusCode, body: &str, what: &str) -> Self {
-        let detail = extract_message(body).unwrap_or_else(|| what.to_string());
+        let detail = extract_message(body)
+            .or_else(|| plain_text_message(body))
+            .unwrap_or_else(|| what.to_string());
         match status.as_u16() {
             400 | 422 => Self::Validation(detail),
             401 => Self::Unauthorized(detail),
@@ -109,6 +111,14 @@ impl ClientError {
     }
 }
 
+/// Some handlers answer errors with a short plain-text body (e.g. "an OS
+/// upgrade is in progress"); use it when it looks like a sentence, not an
+/// HTML page or a JSON document.
+fn plain_text_message(body: &str) -> Option<String> {
+    let t = body.trim();
+    (!t.is_empty() && t.len() <= 500 && !t.starts_with(['<', '{', '['])).then(|| t.to_string())
+}
+
 /// Pull a human message out of a JSON error body.
 pub fn extract_message(body: &str) -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(body).ok()?;
@@ -157,6 +167,14 @@ mod tests {
         let e = ClientError::from_status(StatusCode::NOT_FOUND, "", "GET /rules/9");
         assert_eq!(e.to_string(), "not found: GET /rules/9");
         assert_eq!(extract_message("not json"), None);
+        let e = ClientError::from_status(
+            StatusCode::CONFLICT,
+            "an OS upgrade is in progress",
+            "POST /x",
+        );
+        assert_eq!(e.to_string(), "conflict: an OS upgrade is in progress");
+        let e = ClientError::from_status(StatusCode::BAD_GATEWAY, "<html>bad</html>", "GET /x");
+        assert_eq!(e.to_string(), "server error (502): GET /x");
         assert_eq!(extract_message(r#"{"error":""}"#), None);
     }
 }

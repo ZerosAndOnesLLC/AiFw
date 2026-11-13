@@ -15,6 +15,9 @@ pub enum LocalCmd {
     Reload,
     /// Repair missing pf anchor hooks and rc.conf DNS backend drift
     Reconcile,
+    /// Run the updater directly (when the API is down, e.g. to roll back)
+    #[command(subcommand)]
+    Update(LocalUpdateCmd),
     /// Create the database (first boot / recovery)
     Init {
         #[arg(long)]
@@ -31,8 +34,57 @@ pub enum LocalCmd {
     },
 }
 
+#[derive(Debug, Subcommand)]
+pub enum LocalUpdateCmd {
+    /// Check GitHub for an AiFw update
+    Check {
+        #[arg(long)]
+        pre: bool,
+    },
+    /// Download and install the latest AiFw release
+    Install {
+        #[arg(long)]
+        restart: bool,
+        #[arg(long)]
+        pre: bool,
+    },
+    /// Restore the previous AiFw version
+    Rollback {
+        #[arg(long)]
+        restart: bool,
+    },
+    /// Restart AiFw services
+    Restart,
+    /// Reboot (shutdown -r +1)
+    Reboot,
+    /// Check for OS and package updates
+    OsCheck,
+    /// Install OS and package updates
+    OsInstall,
+    /// Upgrade FreeBSD to a newer release
+    OsUpgrade {
+        target: String,
+        #[arg(short, long)]
+        yes: bool,
+    },
+}
+
 pub async fn run(ctx: &mut Ctx, cmd: LocalCmd, db: &std::path::Path) -> anyhow::Result<()> {
     match cmd {
+        LocalCmd::Update(u) => match u {
+            LocalUpdateCmd::Check { pre } => super::update_check(pre).await,
+            LocalUpdateCmd::Install { restart, pre } => {
+                super::update_install(db, restart, pre).await
+            }
+            LocalUpdateCmd::Rollback { restart } => super::update_rollback(restart).await,
+            LocalUpdateCmd::Restart => super::update_restart().await,
+            LocalUpdateCmd::Reboot => super::update_reboot().await,
+            LocalUpdateCmd::OsCheck => super::update_os_check().await,
+            LocalUpdateCmd::OsInstall => super::update_os_install().await,
+            LocalUpdateCmd::OsUpgrade { target, yes } => {
+                super::update_os_upgrade(&target, yes).await
+            }
+        },
         LocalCmd::Status => super::status(db).await,
         LocalCmd::Reload => super::reload(db).await,
         LocalCmd::Reconcile => super::reconcile(db).await,

@@ -1,355 +1,202 @@
-//! `aifw multiwan …`.
+//! `aifw multiwan …` — routing instances, gateways, groups, policies and
+//! leaks via the API.
 
-use aifw_core::{Database, GatewayEngine, GroupEngine, InstanceEngine, LeakEngine, PolicyEngine};
-use std::path::Path;
-use std::sync::Arc;
-use uuid::Uuid;
+use clap::Subcommand;
+use serde_json::{Value, json};
 
-// ============================================================
-// Multi-WAN CLI commands (#132)
-// ============================================================
+use crate::cli::exit::CliError;
+use crate::cli::{Ctx, col, wide};
 
-async fn open_pf() -> Arc<dyn aifw_pf::PfBackend> {
-    Arc::from(aifw_pf::create_backend())
+#[derive(Debug, Subcommand)]
+pub enum MultiwanCmd {
+    /// List routing instances (FIBs)
+    Instances,
+    /// List gateways with live health state
+    Gateways,
+    /// List gateway groups
+    Groups,
+    /// List policy-routing rules
+    Policies,
+    /// List route leaks
+    Leaks,
+    /// Show live pf flows with iface/FIB
+    Flows,
+    /// Available FIBs and which are in use
+    FibInfo,
+    /// Preview the pf anchors an apply would load
+    Preview,
+    /// Recompile and apply all multi-WAN pf anchors
+    Apply,
+    /// Seed management-escape leaks for non-default instances (then apply)
+    SeedMgmt,
+    /// Force a manual probe outcome for a gateway (for testing)
+    Probe {
+        /// Gateway UUID
+        id: String,
+        /// "ok" or "fail"
+        #[arg(default_value = "ok")]
+        outcome: String,
+    },
+    /// Export the full multi-WAN config as JSON
+    Export,
+    /// Import multi-WAN config from a JSON/YAML file (- for stdin)
+    Import { file: String },
 }
 
-pub async fn multiwan_instances(db_path: &Path) -> anyhow::Result<()> {
-    let db = Database::new(db_path).await?;
-    let pool = db.pool().clone();
-    let pf = open_pf().await;
-    let engine = InstanceEngine::new(pool, pf);
-    engine.migrate().await?;
-    let list = engine.list().await?;
-    println!(
-        "{:<36} {:<16} {:<6} {:<8} STATUS",
-        "ID", "NAME", "FIB", "MGMT"
-    );
-    for i in list {
-        println!(
-            "{:<36} {:<16} {:<6} {:<8} {}",
-            i.id,
-            i.name,
-            i.fib_number,
-            if i.mgmt_reachable { "yes" } else { "no" },
-            i.status.as_str(),
-        );
-    }
-    Ok(())
-}
-
-pub async fn multiwan_gateways(db_path: &Path) -> anyhow::Result<()> {
-    let db = Database::new(db_path).await?;
-    let pool = db.pool().clone();
-    let engine = GatewayEngine::new(pool);
-    engine.migrate().await?;
-    let list = engine.list().await?;
-    println!(
-        "{:<36} {:<16} {:<8} {:<16} {:<12} {:<8} MOS",
-        "ID", "NAME", "STATE", "NEXT-HOP", "IFACE", "RTT"
-    );
-    for g in list {
-        println!(
-            "{:<36} {:<16} {:<8} {:<16} {:<12} {:<8} {}",
-            g.id,
-            g.name,
-            g.state.as_str(),
-            g.next_hop,
-            g.interface,
-            g.last_rtt_ms
-                .map(|v| format!("{v:.1}ms"))
-                .unwrap_or_else(|| "-".into()),
-            g.last_mos
-                .map(|v| format!("{v:.2}"))
-                .unwrap_or_else(|| "-".into()),
-        );
-    }
-    Ok(())
-}
-
-pub async fn multiwan_groups(db_path: &Path) -> anyhow::Result<()> {
-    let db = Database::new(db_path).await?;
-    let pool = db.pool().clone();
-    let engine = GroupEngine::new(pool);
-    engine.migrate().await?;
-    let list = engine.list().await?;
-    println!(
-        "{:<36} {:<16} {:<14} {:<8} STICKY",
-        "ID", "NAME", "POLICY", "PREEMPT"
-    );
-    for g in list {
-        let members = engine.list_members(g.id).await.unwrap_or_default();
-        println!(
-            "{:<36} {:<16} {:<14} {:<8} {:<10} ({} members)",
-            g.id,
-            g.name,
-            g.policy.as_str(),
-            if g.preempt { "yes" } else { "no" },
-            g.sticky.as_str(),
-            members.len(),
-        );
-    }
-    Ok(())
-}
-
-pub async fn multiwan_policies(db_path: &Path) -> anyhow::Result<()> {
-    let db = Database::new(db_path).await?;
-    let pool = db.pool().clone();
-    let pf = open_pf().await;
-    let engine = PolicyEngine::new(pool, pf);
-    engine.migrate().await?;
-    let list = engine.list().await?;
-    println!(
-        "{:<36} {:<5} {:<20} {:<10} {:<12} MATCH",
-        "ID", "PRI", "NAME", "STATUS", "ACTION"
-    );
-    for p in list {
-        println!(
-            "{:<36} {:<5} {:<20} {:<10} {:<12} {} → {}:{}",
-            p.id,
-            p.priority,
-            p.name,
-            p.status,
-            p.action_kind,
-            p.src_addr,
-            p.dst_addr,
-            p.dst_port.as_deref().unwrap_or("*"),
-        );
-    }
-    Ok(())
-}
-
-pub async fn multiwan_leaks(db_path: &Path) -> anyhow::Result<()> {
-    let db = Database::new(db_path).await?;
-    let pool = db.pool().clone();
-    let pf = open_pf().await;
-    let engine = LeakEngine::new(pool, pf);
-    engine.migrate().await?;
-    let list = engine.list().await?;
-    println!(
-        "{:<36} {:<20} {:<20} {:<8} DIRECTION",
-        "ID", "NAME", "PREFIX", "ENABLED"
-    );
-    for l in list {
-        println!(
-            "{:<36} {:<20} {:<20} {:<8} {}",
-            l.id,
-            l.name,
-            l.prefix,
-            if l.enabled { "yes" } else { "no" },
-            l.direction
-        );
-    }
-    Ok(())
-}
-
-pub async fn multiwan_flows() -> anyhow::Result<()> {
-    let pf = open_pf().await;
-    let states = pf.get_states().await?;
-    println!(
-        "{:<8} {:<8} {:<28} {:<28} {:<6} BYTES",
-        "PROTO", "IFACE", "SRC", "DST", "FIB"
-    );
-    for s in states.into_iter().take(100) {
-        println!(
-            "{:<8} {:<8} {:<28} {:<28} {:<6} {}",
-            s.protocol,
-            s.iface.as_deref().unwrap_or("-"),
-            format!("{}:{}", s.src_addr, s.src_port),
-            format!("{}:{}", s.dst_addr, s.dst_port),
-            s.rtable
-                .map(|v| v.to_string())
-                .unwrap_or_else(|| "-".into()),
-            s.bytes_in + s.bytes_out,
-        );
-    }
-    Ok(())
-}
-
-pub async fn multiwan_fib_info() -> anyhow::Result<()> {
-    let pf = open_pf().await;
-    let n = pf.list_fibs().await?;
-    println!("available FIBs: {n}");
-    Ok(())
-}
-
-pub async fn multiwan_apply(db_path: &Path) -> anyhow::Result<()> {
-    let db = Database::new(db_path).await?;
-    let pool = db.pool().clone();
-    let pf = open_pf().await;
-
-    let inst_engine = InstanceEngine::new(pool.clone(), pf.clone());
-    let gw_engine = GatewayEngine::new(pool.clone());
-    let grp_engine = GroupEngine::new(pool.clone());
-    let policy_engine = PolicyEngine::new(pool.clone(), pf.clone());
-    let leak_engine = LeakEngine::new(pool.clone(), pf.clone());
-    inst_engine.migrate().await?;
-    gw_engine.migrate().await?;
-    grp_engine.migrate().await?;
-    policy_engine.migrate().await?;
-    leak_engine.migrate().await?;
-
-    let instances = inst_engine.list().await?;
-    let gateways = gw_engine.list().await?;
-    let groups = grp_engine.list().await?;
-    let mut members = std::collections::HashMap::new();
-    for g in &groups {
-        members.insert(g.id, grp_engine.list_members(g.id).await?);
-    }
-    policy_engine
-        .apply(&instances, &gateways, &groups, &members)
-        .await?;
-    leak_engine.apply(&instances).await?;
-    println!("multi-WAN anchors reloaded");
-    Ok(())
-}
-
-pub async fn multiwan_seed_mgmt(db_path: &Path) -> anyhow::Result<()> {
-    let db = Database::new(db_path).await?;
-    let pool = db.pool().clone();
-    let pf = open_pf().await;
-    let inst_engine = InstanceEngine::new(pool.clone(), pf.clone());
-    let leak_engine = LeakEngine::new(pool.clone(), pf);
-    inst_engine.migrate().await?;
-    leak_engine.migrate().await?;
-    let instances = inst_engine.list().await?;
-    leak_engine.seed_mgmt_escapes(&instances).await?;
-    leak_engine.apply(&instances).await?;
-    println!("mgmt-escape leaks seeded");
-    Ok(())
-}
-
-pub async fn multiwan_probe(db_path: &Path, id: &str, outcome: &str) -> anyhow::Result<()> {
-    let db = Database::new(db_path).await?;
-    let pool = db.pool().clone();
-    let engine = GatewayEngine::new(pool);
-    engine.migrate().await?;
-    let uuid: Uuid = id.parse()?;
-    let success = matches!(outcome, "ok" | "success" | "up");
-    let sample = aifw_core::multiwan::ProbeOutcome {
-        success,
-        rtt_ms: if success { Some(10.0) } else { None },
-        error: if success {
-            None
-        } else {
-            Some("cli-fail".into())
-        },
-    };
-    engine.inject_sample(uuid, sample).await?;
-    let gw = engine.get(uuid).await?;
-    println!("gateway {} → {}", gw.name, gw.state.as_str());
-    Ok(())
-}
-
-pub async fn multiwan_export(db_path: &Path) -> anyhow::Result<()> {
-    let db = Database::new(db_path).await?;
-    let pool = db.pool().clone();
-    let pf = open_pf().await;
-    let inst = InstanceEngine::new(pool.clone(), pf.clone());
-    let gw = GatewayEngine::new(pool.clone());
-    let grp = GroupEngine::new(pool.clone());
-    let pol = PolicyEngine::new(pool.clone(), pf.clone());
-    let lk = LeakEngine::new(pool, pf);
-    inst.migrate().await?;
-    gw.migrate().await?;
-    grp.migrate().await?;
-    pol.migrate().await?;
-    lk.migrate().await?;
-    let bundle = serde_json::json!({
-        "instances": inst.list().await?,
-        "gateways": gw.list().await?,
-        "groups": grp.list().await?,
-        "policies": pol.list().await?,
-        "leaks": lk.list().await?,
-    });
-    println!("{}", serde_json::to_string_pretty(&bundle)?);
-    Ok(())
-}
-
-pub async fn multiwan_import(db_path: &Path, file: &str) -> anyhow::Result<()> {
-    let content = tokio::fs::read_to_string(file).await?;
-    let bundle: serde_json::Value = serde_json::from_str(&content)?;
-    let db = Database::new(db_path).await?;
-    let pool = db.pool().clone();
-    let pf = open_pf().await;
-
-    let inst = InstanceEngine::new(pool.clone(), pf.clone());
-    let gw = GatewayEngine::new(pool.clone());
-    let grp = GroupEngine::new(pool.clone());
-    let pol = PolicyEngine::new(pool.clone(), pf.clone());
-    let lk = LeakEngine::new(pool.clone(), pf.clone());
-    inst.migrate().await?;
-    gw.migrate().await?;
-    grp.migrate().await?;
-    pol.migrate().await?;
-    lk.migrate().await?;
-
-    let mut n = (0usize, 0usize, 0usize, 0usize, 0usize);
-    if let Some(arr) = bundle.get("instances").and_then(|v| v.as_array()) {
-        for v in arr {
-            if let Ok(i) = serde_json::from_value::<aifw_common::RoutingInstance>(v.clone()) {
-                if i.mgmt_reachable {
-                    continue;
-                }
-                if inst.get(i.id).await.is_ok() {
-                    let _ = inst.update(i).await;
-                } else {
-                    let _ = inst.add(i).await;
-                }
-                n.0 += 1;
+pub async fn run(ctx: &mut Ctx, cmd: MultiwanCmd) -> anyhow::Result<()> {
+    let client = ctx.client()?;
+    match cmd {
+        MultiwanCmd::Instances => {
+            let v = client.get("/multiwan/instances").await?;
+            ctx.list(
+                &v,
+                &[
+                    col("ID", "/id"),
+                    col("NAME", "/name"),
+                    col("FIB", "/fib_number"),
+                    col("MGMT", "/mgmt_reachable"),
+                    col("STATUS", "/status"),
+                ],
+            )
+        }
+        MultiwanCmd::Gateways => {
+            let v = client.get("/multiwan/gateways").await?;
+            ctx.list(
+                &v,
+                &[
+                    col("ID", "/id"),
+                    col("NAME", "/name"),
+                    col("STATE", "/state"),
+                    col("NEXT HOP", "/next_hop"),
+                    col("IFACE", "/interface"),
+                    col("RTT (ms)", "/last_rtt_ms"),
+                    wide("MOS", "/last_mos"),
+                    wide("INSTANCE", "/instance_id"),
+                ],
+            )
+        }
+        MultiwanCmd::Groups => {
+            let v = client.get("/multiwan/groups").await?;
+            ctx.list(
+                &v,
+                &[
+                    col("ID", "/id"),
+                    col("NAME", "/name"),
+                    col("POLICY", "/policy"),
+                    col("PREEMPT", "/preempt"),
+                    col("STICKY", "/sticky"),
+                ],
+            )
+        }
+        MultiwanCmd::Policies => {
+            let v = client.get("/multiwan/policies").await?;
+            ctx.list(
+                &v,
+                &[
+                    col("ID", "/id"),
+                    col("PRI", "/priority"),
+                    col("NAME", "/name"),
+                    col("STATUS", "/status"),
+                    col("ACTION", "/action_kind"),
+                    col("SOURCE", "/src_addr"),
+                    col("DESTINATION", "/dst_addr"),
+                    wide("DST PORT", "/dst_port"),
+                ],
+            )
+        }
+        MultiwanCmd::Leaks => {
+            let v = client.get("/multiwan/leaks").await?;
+            ctx.list(
+                &v,
+                &[
+                    col("ID", "/id"),
+                    col("NAME", "/name"),
+                    col("PREFIX", "/prefix"),
+                    col("DIRECTION", "/direction"),
+                    col("ENABLED", "/enabled"),
+                ],
+            )
+        }
+        MultiwanCmd::Flows => {
+            let v = client.get("/multiwan/flows").await?;
+            ctx.list(
+                &v,
+                &[
+                    col("PROTO", "/protocol"),
+                    col("SOURCE", "/src"),
+                    col("DESTINATION", "/dst"),
+                    col("IFACE", "/iface"),
+                    col("FIB", "/rtable"),
+                    col("BYTES", "/bytes"),
+                    col("AGE (s)", "/age_secs"),
+                ],
+            )
+        }
+        MultiwanCmd::FibInfo => {
+            let v = client.get("/multiwan/fibs").await?;
+            if ctx.format().is_structured() {
+                return ctx.raw(&v);
             }
+            let d = crate::cli::output::item(&v);
+            ctx.io.println(&format!(
+                "Available FIBs: {}  in use: {}",
+                d["net_fibs"],
+                crate::cli::output::cell(d.get("used"))
+            ));
+            Ok(())
+        }
+        MultiwanCmd::Preview => ctx.raw(&client.post("/multiwan/preview", &json!({})).await?),
+        MultiwanCmd::Apply => {
+            let v = client.post_empty("/multiwan/apply").await?;
+            ctx.message(&v, "Multi-WAN anchors applied")
+        }
+        MultiwanCmd::SeedMgmt => {
+            let v = client.post_empty("/multiwan/leaks/seed-mgmt").await?;
+            ctx.message(&v, "Management leaks seeded")?;
+            let a = client.post_empty("/multiwan/apply").await?;
+            ctx.message(&a, "Multi-WAN anchors applied")
+        }
+        MultiwanCmd::Probe { id, outcome } => {
+            let ok = matches!(outcome.as_str(), "ok" | "success" | "up");
+            let body = if ok {
+                json!({ "success": true, "rtt_ms": 10.0 })
+            } else {
+                json!({ "success": false, "error": "cli-fail" })
+            };
+            let v = client
+                .post(&format!("/multiwan/gateways/{id}/probe-now"), &body)
+                .await?;
+            if ctx.format().is_structured() {
+                return ctx.raw(&v);
+            }
+            ctx.io.println(&format!(
+                "Gateway {id}: injected {} sample; state now {}",
+                if ok { "ok" } else { "failed" },
+                crate::cli::output::item(&v)["state"]
+                    .as_str()
+                    .unwrap_or("?")
+            ));
+            Ok(())
+        }
+        MultiwanCmd::Export => {
+            let v = client.get("/multiwan/config.yaml").await?;
+            ctx.raw(crate::cli::output::item(&v))
+        }
+        MultiwanCmd::Import { file } => {
+            let mut cfg = crate::cli::body::read(&mut ctx.io, &file)?;
+            let cfg_inner = crate::cli::output::item(&cfg).clone();
+            cfg = cfg_inner;
+            let obj = cfg.as_object_mut().ok_or_else(|| {
+                CliError::Usage(format!(
+                    "{file}: expected an object with instances/gateways/groups/policies/leaks"
+                ))
+            })?;
+            // The API wants all five sections; a missing one means "nothing to import".
+            for k in ["instances", "gateways", "groups", "policies", "leaks"] {
+                obj.entry(k).or_insert_with(|| Value::Array(vec![]));
+            }
+            let v = client.post("/multiwan/apply-yaml", &cfg).await?;
+            ctx.message(&v, "Multi-WAN config imported")
         }
     }
-    if let Some(arr) = bundle.get("gateways").and_then(|v| v.as_array()) {
-        for v in arr {
-            if let Ok(g) = serde_json::from_value::<aifw_common::Gateway>(v.clone()) {
-                if gw.get(g.id).await.is_ok() {
-                    let _ = gw.update(g).await;
-                } else {
-                    let _ = gw.add(g).await;
-                }
-                n.1 += 1;
-            }
-        }
-    }
-    if let Some(arr) = bundle.get("groups").and_then(|v| v.as_array()) {
-        for v in arr {
-            if let Ok(g) = serde_json::from_value::<aifw_common::GatewayGroup>(v.clone()) {
-                if grp.get(g.id).await.is_ok() {
-                    let _ = grp.update(g).await;
-                } else {
-                    let _ = grp.add(g).await;
-                }
-                n.2 += 1;
-            }
-        }
-    }
-    if let Some(arr) = bundle.get("policies").and_then(|v| v.as_array()) {
-        for v in arr {
-            if let Ok(p) = serde_json::from_value::<aifw_common::PolicyRule>(v.clone()) {
-                if pol.get(p.id).await.is_ok() {
-                    let _ = pol.update(p).await;
-                } else {
-                    let _ = pol.add(p).await;
-                }
-                n.3 += 1;
-            }
-        }
-    }
-    if let Some(arr) = bundle.get("leaks").and_then(|v| v.as_array()) {
-        for v in arr {
-            if let Ok(l) = serde_json::from_value::<aifw_common::RouteLeak>(v.clone()) {
-                if lk.get(l.id).await.is_ok() {
-                    let _ = lk.update(l).await;
-                } else {
-                    let _ = lk.add(l).await;
-                }
-                n.4 += 1;
-            }
-        }
-    }
-    println!(
-        "imported: instances={} gateways={} groups={} policies={} leaks={}",
-        n.0, n.1, n.2, n.3, n.4
-    );
-    Ok(())
 }

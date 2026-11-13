@@ -158,6 +158,17 @@ impl Ctx {
         Ok(())
     }
 
+    /// Like [`Self::message`], for service start/stop/validate endpoints
+    /// that answer 200 with a failure message: print it, then fail.
+    pub fn service_message(&mut self, v: &Value, fallback: &str) -> anyhow::Result<()> {
+        self.message(v, fallback)?;
+        let msg = v.get("message").and_then(Value::as_str).unwrap_or_default();
+        if message_reports_failure(msg) {
+            return Err(super::exit::CliError::CheckFailed(msg.to_string()).into());
+        }
+        Ok(())
+    }
+
     /// Raw JSON/YAML (json for table formats too — used by `get` commands
     /// whose output has no natural table).
     pub fn raw(&mut self, v: &Value) -> anyhow::Result<()> {
@@ -177,5 +188,28 @@ impl Ctx {
     pub fn confirm(&mut self, question: &str, yes: bool) -> anyhow::Result<()> {
         let no_input = self.g.no_input;
         prompt::require(&mut self.io, question, yes, no_input, "--yes")
+    }
+}
+
+/// Service endpoints that answer 200 even when the action failed phrase it
+/// as "Failed to …", "<thing> failed: …" or "Configuration invalid: …".
+pub fn message_reports_failure(msg: &str) -> bool {
+    msg.starts_with("Failed")
+        || msg.contains(" failed:")
+        || msg.starts_with("Configuration invalid")
+        || msg.starts_with("Partial reload")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::message_reports_failure;
+
+    #[test]
+    fn soft_failures() {
+        assert!(message_reports_failure("DHCP start failed: exit 1"));
+        assert!(message_reports_failure("Failed to run validation: x"));
+        assert!(message_reports_failure("Configuration invalid: line 3"));
+        assert!(!message_reports_failure("DHCP started"));
+        assert!(!message_reports_failure("Configuration valid"));
     }
 }

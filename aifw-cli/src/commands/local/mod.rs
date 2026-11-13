@@ -7,9 +7,11 @@ mod common;
 mod init;
 mod ratelimit;
 mod system;
+mod updates;
 
 pub use cli_key::{CLI_KEY_NAME, CLI_USERNAME, provision_cli_key};
-pub use cmd::{LocalCmd, run};
+pub use cmd::{LocalCmd, LocalUpdateCmd, run};
 pub use init::init;
 pub use ratelimit::{ratelimit_add, ratelimit_list, ratelimit_remove};
 pub use system::*;
+pub use updates::*;

@@ -1,506 +1,347 @@
-//! `aifw reverse-proxy …` (TrafficCop control plane).
+//! `aifw reverse-proxy …` — TrafficCop reverse proxy via the API: service
+//! control plus CRUD over every routing collection.
 
-use aifw_core::Database;
-use std::path::Path;
+use clap::{Args, Subcommand};
+use serde_json::{Value, json};
 
-// ============================================================
-// Reverse Proxy (TrafficCop) commands
-// ============================================================
+use crate::cli::output::Col;
+use crate::cli::{Ctx, Format, col, wide};
 
-pub async fn rp_status(db_path: &Path) -> anyhow::Result<()> {
-    let db = Database::new(db_path).await?;
-    let pool = db.pool();
-
-    // Check service status
-    let output = aifw_core::sudo::service("trafficcop", "status").await;
-    let running = output.map(|o| o.status.success()).unwrap_or(false);
-
-    println!("Reverse Proxy (TrafficCop)");
-    println!("  Status: {}", if running { "running" } else { "stopped" });
-
-    // Count entities
-    let eps: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tc_entrypoints WHERE enabled = 1")
-        .fetch_one(pool)
-        .await
-        .unwrap_or((0,));
-    let hr: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tc_http_routers WHERE enabled = 1")
-        .fetch_one(pool)
-        .await
-        .unwrap_or((0,));
-    let hs: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tc_http_services WHERE enabled = 1")
-        .fetch_one(pool)
-        .await
-        .unwrap_or((0,));
-    let hm: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tc_http_middlewares WHERE enabled = 1")
-        .fetch_one(pool)
-        .await
-        .unwrap_or((0,));
-    let tr: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tc_tcp_routers WHERE enabled = 1")
-        .fetch_one(pool)
-        .await
-        .unwrap_or((0,));
-    let ur: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tc_udp_routers WHERE enabled = 1")
-        .fetch_one(pool)
-        .await
-        .unwrap_or((0,));
-
-    println!("  Entrypoints:     {}", eps.0);
-    println!("  HTTP Routers:    {}", hr.0);
-    println!("  HTTP Services:   {}", hs.0);
-    println!("  HTTP Middlewares: {}", hm.0);
-    println!("  TCP Routers:     {}", tr.0);
-    println!("  UDP Routers:     {}", ur.0);
-    Ok(())
+#[derive(Debug, Subcommand)]
+pub enum ReverseProxyCmd {
+    /// Service status and object counts
+    Status,
+    /// Start the reverse proxy
+    Start,
+    /// Stop the reverse proxy
+    Stop,
+    /// Restart the reverse proxy
+    Restart,
+    /// Validate the generated config
+    Validate,
+    /// Generate config, write YAML, and reload (stops it if disabled)
+    Apply,
+    /// Global settings (enabled, log level, access log, …)
+    Config {
+        /// Replace the settings from a JSON/YAML file (- for stdin)
+        #[arg(short = 'f', long = "file")]
+        file: Option<String>,
+    },
+    /// Recent log lines
+    Logs {
+        #[arg(long, default_value_t = 200)]
+        lines: u32,
+        /// Only lines containing this text
+        #[arg(long)]
+        search: Option<String>,
+        #[arg(short = 'F', long)]
+        follow: bool,
+    },
+    /// Entrypoints
+    Entrypoints(Coll),
+    /// HTTP routers
+    HttpRouters(Coll),
+    /// HTTP services
+    HttpServices(Coll),
+    /// HTTP middlewares
+    HttpMiddlewares(Coll),
+    /// TCP routers
+    TcpRouters(Coll),
+    /// TCP services
+    TcpServices(Coll),
+    /// UDP routers
+    UdpRouters(Coll),
+    /// UDP services
+    UdpServices(Coll),
+    /// TLS certificates
+    TlsCerts(Coll),
+    /// TLS options
+    TlsOptions(Coll),
+    /// ACME certificate resolvers
+    CertResolvers(Coll),
+    // ---- legacy list shortcuts ----
+    #[command(hide = true)]
+    Routers {
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(hide = true)]
+    Services {
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(hide = true)]
+    Middlewares {
+        #[arg(long)]
+        json: bool,
+    },
+    /// (Replaced by `config`; the generated YAML is not exposed by the API)
+    #[command(hide = true)]
+    ShowConfig,
 }
 
-pub async fn rp_start() -> anyhow::Result<()> {
-    let output = aifw_core::sudo::service("trafficcop", "start").await?;
-    println!("{}", String::from_utf8_lossy(&output.stdout).trim());
-    if !output.stderr.is_empty() {
-        eprintln!("{}", String::from_utf8_lossy(&output.stderr).trim());
+/// A collection: a verb (default `list`), plus the legacy `--json`.
+#[derive(Debug, Args)]
+pub struct Coll {
+    #[command(subcommand)]
+    pub action: Option<Crud>,
+    #[arg(long, hide = true)]
+    pub json: bool,
+}
+
+/// The same verbs for every routing collection. Objects are JSON/YAML in
+/// the API's shape (see `list -o json` for examples).
+#[derive(Debug, Subcommand)]
+pub enum Crud {
+    /// List
+    #[command(visible_alias = "ls")]
+    List,
+    /// Show one (by id or name)
+    Show { id: String },
+    /// Create from a JSON/YAML file (- for stdin)
+    Add {
+        #[arg(short = 'f', long = "file")]
+        file: String,
+    },
+    /// Update from a JSON/YAML file, merged onto the current object
+    Edit {
+        id: String,
+        #[arg(short = 'f', long = "file")]
+        file: String,
+    },
+    /// Enable
+    Enable { id: String },
+    /// Disable
+    Disable { id: String },
+    /// Delete
+    #[command(visible_alias = "rm")]
+    Remove {
+        id: String,
+        #[arg(short, long)]
+        yes: bool,
+    },
+}
+
+fn cols_for(path: &str) -> Vec<Col> {
+    let mut c = vec![col("ID", "/id"), col("NAME", "/name")];
+    if path.contains("routers") {
+        c.extend([
+            col("RULE", "/rule"),
+            col("SERVICE", "/service"),
+            wide("ENTRYPOINTS", "/entry_points"),
+            wide("PRIORITY", "/priority"),
+        ]);
+    } else if path.ends_with("entrypoints") {
+        c.push(col("ADDRESS", "/address"));
+    } else if path.contains("services") {
+        c.push(col("TYPE", "/service_type"));
+    } else if path.contains("middlewares") {
+        c.push(col("TYPE", "/middleware_type"));
     }
-    Ok(())
+    c.push(col("ENABLED", "/enabled"));
+    c
 }
 
-pub async fn rp_stop() -> anyhow::Result<()> {
-    let output = aifw_core::sudo::service("trafficcop", "stop").await?;
-    println!("{}", String::from_utf8_lossy(&output.stdout).trim());
-    Ok(())
+async fn find(client: &aifw_client::Client, path: &str, id: &str) -> anyhow::Result<Value> {
+    let all = client.get(path).await?;
+    crate::cli::output::rows(&all)
+        .into_iter()
+        .find(|r| r["id"].to_string().trim_matches('"') == id || r["name"] == json!(id))
+        .cloned()
+        .ok_or_else(|| aifw_client::ClientError::NotFound(format!("{id} in {path}")).into())
 }
 
-pub async fn rp_restart() -> anyhow::Result<()> {
-    let output = aifw_core::sudo::service("trafficcop", "restart").await?;
-    println!("{}", String::from_utf8_lossy(&output.stdout).trim());
-    Ok(())
+fn id_of(v: &Value) -> String {
+    v["id"].to_string().trim_matches('"').to_string()
 }
 
-pub async fn rp_validate(db_path: &Path) -> anyhow::Result<()> {
-    let db = Database::new(db_path).await?;
-    let pool = db.pool();
-
-    println!("Generating config...");
-    let yaml = rp_generate_config(pool).await?;
-
-    let tmp = "/tmp/trafficcop-validate.yaml";
-    tokio::fs::write(tmp, &yaml).await?;
-
-    let output = tokio::process::Command::new("trafficcop")
-        .args(["-c", tmp, "--validate"])
-        .output()
-        .await?;
-
-    let _ = tokio::fs::remove_file(tmp).await;
-
-    if output.status.success() {
-        println!("Config is valid.");
-    } else {
-        println!("Config validation failed:");
-        println!("{}", String::from_utf8_lossy(&output.stderr).trim());
+async fn crud(
+    ctx: &mut Ctx,
+    client: &aifw_client::Client,
+    path: &str,
+    cmd: Crud,
+) -> anyhow::Result<()> {
+    match cmd {
+        Crud::List => {
+            let v = client.get(path).await?;
+            ctx.list(&v, &cols_for(path))
+        }
+        Crud::Show { id } => {
+            let v = find(client, path, &id).await?;
+            ctx.raw(&v)
+        }
+        Crud::Add { file } => {
+            let body = crate::cli::body::read(&mut ctx.io, &file)?;
+            let v = client.post(path, &body).await?;
+            ctx.message(&v, "Created")
+        }
+        Crud::Edit { id, file } => {
+            let mut cur = find(client, path, &id).await?;
+            let patch = crate::cli::body::read(&mut ctx.io, &file)?;
+            crate::cli::body::merge(&mut cur, &patch);
+            let v = client.put(&format!("{path}/{}", id_of(&cur)), &cur).await?;
+            ctx.message(&v, "Updated")
+        }
+        Crud::Enable { id } => set_enabled(ctx, client, path, &id, true).await,
+        Crud::Disable { id } => set_enabled(ctx, client, path, &id, false).await,
+        Crud::Remove { id, yes } => {
+            let cur = find(client, path, &id).await?;
+            ctx.confirm(
+                &format!(
+                    "Delete {} ({id})?",
+                    cur["name"].as_str().unwrap_or("object")
+                ),
+                yes,
+            )?;
+            let v = client.delete(&format!("{path}/{}", id_of(&cur))).await?;
+            ctx.message(&v, "Deleted")
+        }
     }
-    Ok(())
 }
 
-pub async fn rp_apply(db_path: &Path) -> anyhow::Result<()> {
-    let db = Database::new(db_path).await?;
-    let pool = db.pool();
-
-    println!("Generating config...");
-    let yaml = rp_generate_config(pool).await?;
-
-    // Write config through the narrow `aifw-sudo-write` helper rather
-    // than the broad `sudo tee` grant (#204).
-    aifw_core::sudo::write_file(
-        std::path::Path::new("/usr/local/etc/trafficcop/config.yaml"),
-        yaml.as_bytes(),
-    )
-    .await?;
-
-    println!("Config written. Restarting service...");
-    let output = aifw_core::sudo::service("trafficcop", "restart").await?;
-    println!("{}", String::from_utf8_lossy(&output.stdout).trim());
-    Ok(())
+async fn set_enabled(
+    ctx: &mut Ctx,
+    client: &aifw_client::Client,
+    path: &str,
+    id: &str,
+    on: bool,
+) -> anyhow::Result<()> {
+    let mut cur = find(client, path, id).await?;
+    cur["enabled"] = json!(on);
+    let v = client.put(&format!("{path}/{}", id_of(&cur)), &cur).await?;
+    ctx.message(&v, if on { "Enabled" } else { "Disabled" })
 }
 
-pub async fn rp_routers(db_path: &Path, json: bool) -> anyhow::Result<()> {
-    let db = Database::new(db_path).await?;
-    let pool = db.pool();
-    let rows = sqlx::query_as::<_, (String, String, String, String, i32, i64)>(
-        "SELECT name, rule, service, entry_points, priority, enabled FROM tc_http_routers ORDER BY name"
-    ).fetch_all(pool).await?;
+async fn coll(
+    ctx: &mut Ctx,
+    client: &aifw_client::Client,
+    path: &str,
+    c: Coll,
+) -> anyhow::Result<()> {
+    if c.json {
+        ctx.force_format(Format::Json);
+    }
+    crud(ctx, client, path, c.action.unwrap_or(Crud::List)).await
+}
 
+/// The old `routers` / `services` / `middlewares` list shortcuts.
+async fn legacy_list(
+    ctx: &mut Ctx,
+    client: &aifw_client::Client,
+    path: &str,
+    json: bool,
+) -> anyhow::Result<()> {
     if json {
-        let items: Vec<serde_json::Value> = rows.iter().map(|(n, r, s, ep, p, e)| {
-            serde_json::json!({"name": n, "rule": r, "service": s, "entry_points": ep, "priority": p, "enabled": *e == 1})
-        }).collect();
-        println!("{}", serde_json::to_string_pretty(&items)?);
-    } else {
-        println!(
-            "{:<20} {:<40} {:<20} {:<5} ENABLED",
-            "NAME", "RULE", "SERVICE", "PRI"
-        );
-        println!("{}", "-".repeat(95));
-        for (n, r, s, _, p, e) in &rows {
-            let rule_display = if r.len() > 38 {
-                format!("{}...", &r[..35])
-            } else {
-                r.clone()
+        ctx.force_format(Format::Json);
+    }
+    crud(ctx, client, path, Crud::List).await
+}
+
+pub async fn run(ctx: &mut Ctx, cmd: ReverseProxyCmd) -> anyhow::Result<()> {
+    let client = ctx.client()?;
+    let base = "/reverse-proxy";
+    match cmd {
+        ReverseProxyCmd::Status => {
+            let v = client.get("/reverse-proxy/status").await?;
+            ctx.detail(
+                &v,
+                &[
+                    ("Running", "/running"),
+                    ("Version", "/version"),
+                    ("Entrypoints", "/entrypoints"),
+                    ("HTTP routers", "/http_routers"),
+                    ("HTTP services", "/http_services"),
+                    ("HTTP middlewares", "/http_middlewares"),
+                    ("TCP routers", "/tcp_routers"),
+                    ("UDP routers", "/udp_routers"),
+                ],
+            )
+        }
+        ReverseProxyCmd::Start => {
+            let v = client.post_empty("/reverse-proxy/start").await?;
+            ctx.service_message(&v, "Started")
+        }
+        ReverseProxyCmd::Stop => {
+            let v = client.post_empty("/reverse-proxy/stop").await?;
+            ctx.service_message(&v, "Stopped")
+        }
+        ReverseProxyCmd::Restart => {
+            let v = client.post_empty("/reverse-proxy/restart").await?;
+            ctx.service_message(&v, "Restarted")
+        }
+        ReverseProxyCmd::Validate => {
+            let v = client.post_empty("/reverse-proxy/validate").await?;
+            ctx.service_message(&v, "Configuration valid")
+        }
+        ReverseProxyCmd::Apply => {
+            let v = client.post_empty("/reverse-proxy/apply").await?;
+            ctx.service_message(&v, "Applied")
+        }
+        ReverseProxyCmd::Config { file } => {
+            let v = match file {
+                Some(f) => {
+                    let body = crate::cli::body::read(&mut ctx.io, &f)?;
+                    client.put("/reverse-proxy/config", &body).await?
+                }
+                None => client.get("/reverse-proxy/config").await?,
             };
-            println!(
-                "{:<20} {:<40} {:<20} {:<5} {}",
-                n,
-                rule_display,
-                s,
-                p,
-                if *e == 1 { "yes" } else { "no" }
-            );
+            ctx.raw(&v)
         }
-    }
-    Ok(())
-}
-
-pub async fn rp_services(db_path: &Path, json: bool) -> anyhow::Result<()> {
-    let db = Database::new(db_path).await?;
-    let pool = db.pool();
-    let rows = sqlx::query_as::<_, (String, String, i64)>(
-        "SELECT name, service_type, enabled FROM tc_http_services ORDER BY name",
-    )
-    .fetch_all(pool)
-    .await?;
-
-    if json {
-        let items: Vec<serde_json::Value> = rows
-            .iter()
-            .map(|(n, t, e)| serde_json::json!({"name": n, "type": t, "enabled": *e == 1}))
-            .collect();
-        println!("{}", serde_json::to_string_pretty(&items)?);
-    } else {
-        println!("{:<30} {:<20} ENABLED", "NAME", "TYPE");
-        println!("{}", "-".repeat(55));
-        for (n, t, e) in &rows {
-            println!("{:<30} {:<20} {}", n, t, if *e == 1 { "yes" } else { "no" });
+        ReverseProxyCmd::ShowConfig => {
+            ctx.io.eprintln("note: the generated YAML isn't exposed by the API; showing the global settings (`aifw reverse-proxy config`).");
+            ctx.raw(&client.get("/reverse-proxy/config").await?)
         }
-    }
-    Ok(())
-}
-
-pub async fn rp_middlewares(db_path: &Path, json: bool) -> anyhow::Result<()> {
-    let db = Database::new(db_path).await?;
-    let pool = db.pool();
-    let rows = sqlx::query_as::<_, (String, String, i64)>(
-        "SELECT name, middleware_type, enabled FROM tc_http_middlewares ORDER BY name",
-    )
-    .fetch_all(pool)
-    .await?;
-
-    if json {
-        let items: Vec<serde_json::Value> = rows
-            .iter()
-            .map(|(n, t, e)| serde_json::json!({"name": n, "type": t, "enabled": *e == 1}))
-            .collect();
-        println!("{}", serde_json::to_string_pretty(&items)?);
-    } else {
-        println!("{:<30} {:<25} ENABLED", "NAME", "TYPE");
-        println!("{}", "-".repeat(60));
-        for (n, t, e) in &rows {
-            println!("{:<30} {:<25} {}", n, t, if *e == 1 { "yes" } else { "no" });
-        }
-    }
-    Ok(())
-}
-
-pub async fn rp_entrypoints(db_path: &Path, json: bool) -> anyhow::Result<()> {
-    let db = Database::new(db_path).await?;
-    let pool = db.pool();
-    let rows = sqlx::query_as::<_, (String, String, i64)>(
-        "SELECT name, address, enabled FROM tc_entrypoints ORDER BY name",
-    )
-    .fetch_all(pool)
-    .await?;
-
-    if json {
-        let items: Vec<serde_json::Value> = rows
-            .iter()
-            .map(|(n, a, e)| serde_json::json!({"name": n, "address": a, "enabled": *e == 1}))
-            .collect();
-        println!("{}", serde_json::to_string_pretty(&items)?);
-    } else {
-        println!("{:<20} {:<20} ENABLED", "NAME", "ADDRESS");
-        println!("{}", "-".repeat(45));
-        for (n, a, e) in &rows {
-            println!("{:<20} {:<20} {}", n, a, if *e == 1 { "yes" } else { "no" });
-        }
-    }
-    Ok(())
-}
-
-pub async fn rp_show_config(db_path: &Path) -> anyhow::Result<()> {
-    let db = Database::new(db_path).await?;
-    let pool = db.pool();
-    let yaml = rp_generate_config(pool).await?;
-    println!("{}", yaml);
-    Ok(())
-}
-
-/// Generate TrafficCop YAML config from DB (CLI version, mirrors the API logic).
-async fn rp_generate_config(pool: &sqlx::SqlitePool) -> anyhow::Result<String> {
-    use serde_json::json;
-
-    let mut root = serde_json::Map::new();
-
-    // Entry points
-    let eps = sqlx::query_as::<_, (String, String, String)>(
-        "SELECT name, address, config_json FROM tc_entrypoints WHERE enabled = 1",
-    )
-    .fetch_all(pool)
-    .await?;
-    if !eps.is_empty() {
-        let mut map = serde_json::Map::new();
-        for (name, addr, cfg) in &eps {
-            let mut val: serde_json::Value = serde_json::from_str(cfg).unwrap_or(json!({}));
-            val["address"] = json!(addr);
-            map.insert(name.clone(), val);
-        }
-        root.insert("entryPoints".to_string(), json!(map));
-    }
-
-    // HTTP
-    let mut http = serde_json::Map::new();
-
-    let routers = sqlx::query_as::<_, (String, String, String, String, String, i32, Option<String>)>(
-        "SELECT name, rule, service, entry_points, middlewares, priority, tls_json FROM tc_http_routers WHERE enabled = 1"
-    ).fetch_all(pool).await?;
-    if !routers.is_empty() {
-        let mut map = serde_json::Map::new();
-        for (name, rule, svc, ep_json, mw_json, pri, tls) in &routers {
-            let eps: Vec<String> = serde_json::from_str(ep_json).unwrap_or_default();
-            let mws: Vec<String> = serde_json::from_str(mw_json).unwrap_or_default();
-            let mut rv = json!({"rule": rule, "service": svc});
-            if !eps.is_empty() {
-                rv["entryPoints"] = json!(eps);
+        ReverseProxyCmd::Logs {
+            lines,
+            search,
+            follow,
+        } => {
+            let mut path = format!("/reverse-proxy/logs?lines={lines}");
+            if let Some(s) = search {
+                let q: String = url::form_urlencoded::byte_serialize(s.as_bytes()).collect();
+                path.push_str(&format!("&search={q}"));
             }
-            if !mws.is_empty() {
-                rv["middlewares"] = json!(mws);
-            }
-            if *pri != 0 {
-                rv["priority"] = json!(pri);
-            }
-            if let Some(t) = tls
-                && let Ok(tv) = serde_json::from_str::<serde_json::Value>(t)
-            {
-                rv["tls"] = tv;
-            }
-            map.insert(name.clone(), rv);
+            super::logs::tail(ctx, &client, &path, follow).await
         }
-        http.insert("routers".to_string(), json!(map));
-    }
-
-    let services = sqlx::query_as::<_, (String, String, String)>(
-        "SELECT name, service_type, config_json FROM tc_http_services WHERE enabled = 1",
-    )
-    .fetch_all(pool)
-    .await?;
-    if !services.is_empty() {
-        let mut map = serde_json::Map::new();
-        for (name, stype, cfg) in &services {
-            let config: serde_json::Value = serde_json::from_str(cfg).unwrap_or(json!({}));
-            let mut sv = serde_json::Map::new();
-            sv.insert(stype.clone(), config);
-            map.insert(name.clone(), serde_json::Value::Object(sv));
+        ReverseProxyCmd::Routers { json } => {
+            legacy_list(ctx, &client, "/reverse-proxy/http/routers", json).await
         }
-        http.insert("services".to_string(), json!(map));
-    }
-
-    let middlewares = sqlx::query_as::<_, (String, String, String)>(
-        "SELECT name, middleware_type, config_json FROM tc_http_middlewares WHERE enabled = 1",
-    )
-    .fetch_all(pool)
-    .await?;
-    if !middlewares.is_empty() {
-        let mut map = serde_json::Map::new();
-        for (name, mtype, cfg) in &middlewares {
-            let config: serde_json::Value = serde_json::from_str(cfg).unwrap_or(json!({}));
-            let mut mv = serde_json::Map::new();
-            mv.insert(mtype.clone(), config);
-            map.insert(name.clone(), serde_json::Value::Object(mv));
+        ReverseProxyCmd::Services { json } => {
+            legacy_list(ctx, &client, "/reverse-proxy/http/services", json).await
         }
-        http.insert("middlewares".to_string(), json!(map));
-    }
-
-    if !http.is_empty() {
-        root.insert("http".to_string(), json!(http));
-    }
-
-    // TCP
-    let mut tcp = serde_json::Map::new();
-    let tcp_routers = sqlx::query_as::<_, (String, String, String, String, i32, Option<String>)>(
-        "SELECT name, rule, service, entry_points, priority, tls_json FROM tc_tcp_routers WHERE enabled = 1"
-    ).fetch_all(pool).await?;
-    if !tcp_routers.is_empty() {
-        let mut map = serde_json::Map::new();
-        for (name, rule, svc, ep_json, pri, tls) in &tcp_routers {
-            let eps: Vec<String> = serde_json::from_str(ep_json).unwrap_or_default();
-            let mut rv = json!({"rule": rule, "service": svc});
-            if !eps.is_empty() {
-                rv["entryPoints"] = json!(eps);
-            }
-            if *pri != 0 {
-                rv["priority"] = json!(pri);
-            }
-            if let Some(t) = tls
-                && let Ok(tv) = serde_json::from_str::<serde_json::Value>(t)
-            {
-                rv["tls"] = tv;
-            }
-            map.insert(name.clone(), rv);
+        ReverseProxyCmd::Middlewares { json } => {
+            legacy_list(ctx, &client, "/reverse-proxy/http/middlewares", json).await
         }
-        tcp.insert("routers".to_string(), json!(map));
-    }
-    let tcp_services = sqlx::query_as::<_, (String, String, String)>(
-        "SELECT name, service_type, config_json FROM tc_tcp_services WHERE enabled = 1",
-    )
-    .fetch_all(pool)
-    .await?;
-    if !tcp_services.is_empty() {
-        let mut map = serde_json::Map::new();
-        for (name, stype, cfg) in &tcp_services {
-            let config: serde_json::Value = serde_json::from_str(cfg).unwrap_or(json!({}));
-            let mut sv = serde_json::Map::new();
-            sv.insert(stype.clone(), config);
-            map.insert(name.clone(), serde_json::Value::Object(sv));
+        ReverseProxyCmd::Entrypoints(c) => {
+            coll(ctx, &client, &format!("{base}/entrypoints"), c).await
         }
-        tcp.insert("services".to_string(), json!(map));
-    }
-    if !tcp.is_empty() {
-        root.insert("tcp".to_string(), json!(tcp));
-    }
-
-    // UDP
-    let mut udp = serde_json::Map::new();
-    let udp_routers = sqlx::query_as::<_, (String, String, String, String, i32)>(
-        "SELECT name, rule, service, entry_points, priority FROM tc_udp_routers WHERE enabled = 1",
-    )
-    .fetch_all(pool)
-    .await?;
-    if !udp_routers.is_empty() {
-        let mut map = serde_json::Map::new();
-        for (name, rule, svc, ep_json, pri) in &udp_routers {
-            let eps: Vec<String> = serde_json::from_str(ep_json).unwrap_or_default();
-            let mut rv = json!({"rule": rule, "service": svc});
-            if !eps.is_empty() {
-                rv["entryPoints"] = json!(eps);
-            }
-            if *pri != 0 {
-                rv["priority"] = json!(pri);
-            }
-            map.insert(name.clone(), rv);
+        ReverseProxyCmd::HttpRouters(c) => {
+            coll(ctx, &client, &format!("{base}/http/routers"), c).await
         }
-        udp.insert("routers".to_string(), json!(map));
-    }
-    let udp_services = sqlx::query_as::<_, (String, String, String)>(
-        "SELECT name, service_type, config_json FROM tc_udp_services WHERE enabled = 1",
-    )
-    .fetch_all(pool)
-    .await?;
-    if !udp_services.is_empty() {
-        let mut map = serde_json::Map::new();
-        for (name, stype, cfg) in &udp_services {
-            let config: serde_json::Value = serde_json::from_str(cfg).unwrap_or(json!({}));
-            let mut sv = serde_json::Map::new();
-            sv.insert(stype.clone(), config);
-            map.insert(name.clone(), serde_json::Value::Object(sv));
+        ReverseProxyCmd::HttpServices(c) => {
+            coll(ctx, &client, &format!("{base}/http/services"), c).await
         }
-        udp.insert("services".to_string(), json!(map));
-    }
-    if !udp.is_empty() {
-        root.insert("udp".to_string(), json!(udp));
-    }
-
-    // TLS
-    let tls_certs =
-        sqlx::query_as::<_, (String, String)>("SELECT cert_file, key_file FROM tc_tls_certs")
-            .fetch_all(pool)
-            .await?;
-    let tls_opts =
-        sqlx::query_as::<_, (String, String)>("SELECT name, config_json FROM tc_tls_options")
-            .fetch_all(pool)
-            .await?;
-    if !tls_certs.is_empty() || !tls_opts.is_empty() {
-        let mut tls = serde_json::Map::new();
-        if !tls_certs.is_empty() {
-            let certs: Vec<serde_json::Value> = tls_certs
-                .iter()
-                .map(|(c, k)| json!({"certFile": c, "keyFile": k}))
-                .collect();
-            tls.insert("certificates".to_string(), json!(certs));
+        ReverseProxyCmd::HttpMiddlewares(c) => {
+            coll(ctx, &client, &format!("{base}/http/middlewares"), c).await
         }
-        if !tls_opts.is_empty() {
-            let mut opts = serde_json::Map::new();
-            for (name, cfg) in &tls_opts {
-                let config: serde_json::Value = serde_json::from_str(cfg).unwrap_or(json!({}));
-                opts.insert(name.clone(), config);
-            }
-            tls.insert("options".to_string(), json!(opts));
+        ReverseProxyCmd::TcpRouters(c) => {
+            coll(ctx, &client, &format!("{base}/tcp/routers"), c).await
         }
-        root.insert("tls".to_string(), json!(tls));
-    }
-
-    // Certificate resolvers
-    let resolvers =
-        sqlx::query_as::<_, (String, String)>("SELECT name, config_json FROM tc_cert_resolvers")
-            .fetch_all(pool)
-            .await?;
-    if !resolvers.is_empty() {
-        let mut map = serde_json::Map::new();
-        for (name, cfg) in &resolvers {
-            let config: serde_json::Value = serde_json::from_str(cfg).unwrap_or(json!({}));
-            map.insert(name.clone(), config);
+        ReverseProxyCmd::TcpServices(c) => {
+            coll(ctx, &client, &format!("{base}/tcp/services"), c).await
         }
-        root.insert("certificatesResolvers".to_string(), json!(map));
+        ReverseProxyCmd::UdpRouters(c) => {
+            coll(ctx, &client, &format!("{base}/udp/routers"), c).await
+        }
+        ReverseProxyCmd::UdpServices(c) => {
+            coll(ctx, &client, &format!("{base}/udp/services"), c).await
+        }
+        ReverseProxyCmd::TlsCerts(c) => coll(ctx, &client, &format!("{base}/tls/certs"), c).await,
+        ReverseProxyCmd::TlsOptions(c) => {
+            coll(ctx, &client, &format!("{base}/tls/options"), c).await
+        }
+        ReverseProxyCmd::CertResolvers(c) => {
+            coll(ctx, &client, &format!("{base}/cert-resolvers"), c).await
+        }
     }
-
-    // Global config (log, accessLog, api, metrics)
-    let kv = sqlx::query_as::<_, (String, String)>("SELECT key, value FROM tc_config")
-        .fetch_all(pool)
-        .await
-        .unwrap_or_default();
-
-    let get =
-        |key: &str| -> Option<String> { kv.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone()) };
-
-    let log_level = get("log_level").unwrap_or_else(|| "info".to_string());
-    root.insert(
-        "log".to_string(),
-        json!({
-            "level": log_level,
-            "filePath": "/var/log/trafficcop/trafficcop.log"
-        }),
-    );
-
-    if get("access_log_enabled").as_deref() != Some("false") {
-        let path =
-            get("access_log_path").unwrap_or_else(|| "/var/log/trafficcop/access.log".to_string());
-        let fmt = get("access_log_format").unwrap_or_else(|| "json".to_string());
-        root.insert(
-            "accessLog".to_string(),
-            json!({"filePath": path, "format": fmt}),
-        );
-    }
-
-    if get("api_dashboard").as_deref() != Some("false") {
-        root.insert(
-            "api".to_string(),
-            json!({"dashboard": true, "insecure": true}),
-        );
-    }
-
-    if get("metrics_enabled").as_deref() == Some("true") {
-        let addr = get("metrics_address").unwrap_or_else(|| ":9090".to_string());
-        root.insert(
-            "metrics".to_string(),
-            json!({"prometheus": {"address": addr}}),
-        );
-    }
-
-    let yaml = serde_yaml_ng::to_string(&root)?;
-    Ok(yaml)
 }
