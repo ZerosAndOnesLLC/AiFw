@@ -44,6 +44,8 @@ case "$DEST" in
         FMODE=644; FOWNER=root:wheel ;;
     /usr/local/etc/trafficcop/config.yaml)
         FMODE=644; FOWNER=root:wheel ;;
+    /etc/cron.d/aifw-updates)
+        FMODE=644; FOWNER=root:wheel ;;
     /usr/local/etc/aifw/daemon.key)
         FMODE=640; FOWNER=root:aifw ;;
     /usr/local/etc/newsyslog.conf.d/aifw.conf)

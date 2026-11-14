@@ -96,8 +96,8 @@ fn install_error(context: &str, detail: &str) -> (StatusCode, String) {
     if is_privilege_refusal(detail) {
         msg.push_str(
             "\n\nThis looks like the unprivileged updater being denied by sudo. \
-             Run the update from the console as root instead: \
-             `aifw update install --pre --restart`, then reboot.",
+             Run the updater directly from the console as root instead: \
+             `aifw local update install --pre --restart`, then reboot.",
         );
     }
     (StatusCode::INTERNAL_SERVER_ERROR, msg)
@@ -942,6 +942,44 @@ pub async fn get_schedule(
     Ok(Json(load_schedule(&state.pool).await))
 }
 
+/// Where the maintenance-window job lives (system crontab format).
+pub const MAINTENANCE_CRON_PATH: &str = "/etc/cron.d/aifw-updates";
+
+/// The system crontab for a maintenance window: runs as root, so the CLI
+/// authenticates with the on-box key and pins itself to this appliance
+/// (`--context local`) whatever contexts root has saved. Disabled windows
+/// produce a comment-only file (the write helper can't delete).
+pub fn maintenance_crontab(mw: &MaintenanceWindow) -> String {
+    const HEADER: &str = "# Managed by AiFw (Updates → Maintenance window). Do not edit.\n";
+    if !mw.enabled {
+        return format!("{HEADER}# maintenance window disabled\n");
+    }
+    let parts: Vec<&str> = mw.time.split(':').collect();
+    let hour = parts.first().copied().unwrap_or("3");
+    let minute = parts.get(1).copied().unwrap_or("0");
+    let dow = match mw.day_of_week.to_lowercase().as_str() {
+        "mon" => "1",
+        "tue" => "2",
+        "wed" => "3",
+        "thu" => "4",
+        "fri" => "5",
+        "sat" => "6",
+        _ => "0", // sun or any other value
+    };
+    let aifw = "/usr/local/sbin/aifw --context local --no-input";
+    let mut cmd = format!("{aifw} update os-check");
+    if mw.auto_install {
+        cmd.push_str(&format!(" && {aifw} update os-install"));
+    }
+    if mw.auto_update_aifw {
+        cmd.push_str(&format!("; {aifw} update check && {aifw} update install"));
+    }
+    if mw.auto_reboot {
+        cmd.push_str(" && /sbin/shutdown -r +1m 'AiFw maintenance reboot'");
+    }
+    format!("{HEADER}{minute} {hour} * * {dow} root {cmd}\n")
+}
+
 pub async fn update_schedule(
     State(state): State<AppState>,
     Json(mw): Json<MaintenanceWindow>,
@@ -979,36 +1017,18 @@ pub async fn update_schedule(
     )
     .await;
 
-    // Write cron job if enabled
-    if mw.enabled {
-        let parts: Vec<&str> = mw.time.split(':').collect();
-        let hour = parts.first().unwrap_or(&"3");
-        let minute = parts.get(1).unwrap_or(&"0");
-        let dow = match mw.day_of_week.to_lowercase().as_str() {
-            "mon" => "1",
-            "tue" => "2",
-            "wed" => "3",
-            "thu" => "4",
-            "fri" => "5",
-            "sat" => "6",
-            _ => "0", // sun or any other value
-        };
-        let mut cron_cmd = String::from("/usr/local/sbin/aifw update os-check");
-        if mw.auto_install {
-            cron_cmd.push_str(" && /usr/local/sbin/aifw update os-install");
-        }
-        if mw.auto_update_aifw {
-            cron_cmd.push_str(
-                "; /usr/local/sbin/aifw update check && /usr/local/sbin/aifw update install",
-            );
-        }
-        if mw.auto_reboot {
-            cron_cmd.push_str(" && /sbin/shutdown -r +1m 'AiFw maintenance reboot'");
-        }
-        let cron_line = format!("{} {} * * {} {}\n", minute, hour, dow, cron_cmd);
-        let _ = tokio::fs::write("/var/cron/tabs/aifw-updates", &cron_line).await;
-    } else {
-        let _ = tokio::fs::remove_file("/var/cron/tabs/aifw-updates").await;
+    // System crontab (has a user field) written as root through the
+    // narrow write helper. The old code wrote /var/cron/tabs/aifw-updates
+    // as the unprivileged API user: that directory is root-only, so the
+    // write always failed (silently), and a tab file there would have run
+    // as a nonexistent user `aifw-updates` anyway.
+    let cron = maintenance_crontab(&mw);
+    if let Err(e) =
+        aifw_core::sudo::write_file(std::path::Path::new(MAINTENANCE_CRON_PATH), cron.as_bytes())
+            .await
+    {
+        tracing::error!(error = %e, path = MAINTENANCE_CRON_PATH, "failed to write the maintenance cron");
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     log_update(
@@ -1446,7 +1466,8 @@ mod install_error_tests {
         assert!(body.contains("update install failed"));
         assert!(body.contains("aifw-sudo-tar")); // original detail preserved
         assert!(body.contains("console as root"));
-        assert!(body.contains("aifw update install"));
+        // The console fix must bypass the API (#714 review M19).
+        assert!(body.contains("aifw local update install"));
     }
 
     #[test]
@@ -1571,5 +1592,38 @@ mod resume_decision_tests {
             resume_decision("bogus", T, NEW, r(true, true, true)),
             ResumeAction::Nothing
         );
+    }
+}
+
+#[cfg(test)]
+mod maintenance_cron_tests {
+    use super::*;
+
+    fn mw(enabled: bool) -> MaintenanceWindow {
+        MaintenanceWindow {
+            enabled,
+            day_of_week: "sat".into(),
+            time: "04:30".into(),
+            auto_install: true,
+            auto_reboot: false,
+            auto_check: true,
+            auto_update_aifw: true,
+        }
+    }
+
+    #[test]
+    fn crontab_runs_as_root_against_this_box() {
+        let c = maintenance_crontab(&mw(true));
+        let line = c.lines().find(|l| !l.starts_with('#')).unwrap();
+        assert!(line.starts_with("30 04 * * 6 root "), "{line}");
+        assert!(line.contains("aifw --context local --no-input update os-check && "));
+        assert!(line.contains("update install"));
+        assert!(!line.contains("shutdown"));
+    }
+
+    #[test]
+    fn disabled_window_is_comment_only() {
+        let c = maintenance_crontab(&mw(false));
+        assert!(c.lines().all(|l| l.starts_with('#')), "{c}");
     }
 }

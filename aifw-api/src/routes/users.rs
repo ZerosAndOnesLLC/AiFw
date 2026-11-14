@@ -4,6 +4,17 @@ use super::*;
 use crate::auth;
 use axum::Extension;
 
+/// AiFw's own service identities (`auth_provider = 'system'`: the daemon /
+/// cluster-peer account and the on-box CLI account) are managed by their
+/// dedicated code paths; deleting, disabling or re-roling them through the
+/// user API would silently break HA replication or root's CLI.
+async fn refuse_service_account(state: &AppState, id: &str) -> Result<(), StatusCode> {
+    match auth::get_user_by_id(&state.pool, id).await? {
+        Some(u) if u.auth_provider == "system" => Err(StatusCode::FORBIDDEN),
+        _ => Ok(()),
+    }
+}
+
 /// Protected user creation — requires authentication (admin only via RBAC middleware)
 pub async fn create_user(
     State(state): State<AppState>,
@@ -40,6 +51,7 @@ pub async fn update_user(
     Json(req): Json<auth::UpdateUserRequest>,
 ) -> Result<Json<ApiResponse<auth::User>>, StatusCode> {
     let actor_id = actor.user_id;
+    refuse_service_account(&state, &id).await?;
     let user = auth::update_user(
         &state.pool,
         &id,
@@ -68,6 +80,7 @@ pub async fn delete_user_handler(
     Path(id): Path<String>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
     let actor_id = actor.user_id;
+    refuse_service_account(&state, &id).await?;
     // Prevent self-deletion
     if actor_id == id {
         return Err(StatusCode::BAD_REQUEST);

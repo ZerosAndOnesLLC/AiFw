@@ -193,6 +193,15 @@ pub async fn create_rule(
 
     rule.schedule_id = req.schedule_id;
     rule.gateway = validate_gateway_ref(&state, req.gateway).await?;
+    // Create honours `status` like update does (a rule added as disabled
+    // must not go live on the next apply).
+    if let Some(ref s) = req.status {
+        rule.status = match s.as_str() {
+            "active" => RuleStatus::Active,
+            "disabled" => RuleStatus::Disabled,
+            _ => return Err(bad_request()),
+        };
+    }
 
     // Interface/label/port/priority checks live in RuleEngine::add
     // (`validate_rule`), which every path — API, CLI, restore — goes through.

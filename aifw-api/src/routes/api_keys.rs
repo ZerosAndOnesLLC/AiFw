@@ -115,6 +115,13 @@ pub async fn revoke_api_key(
     if owner_id != caller.user_id && !caller.permissions.has(Permission::UsersWrite) {
         return Err(StatusCode::FORBIDDEN);
     }
+    // A request made with an API key may only revoke that same key: a
+    // narrowed key must not be able to take away its owner's other keys.
+    if let Some(own) = caller.api_key_id.as_deref()
+        && own != id
+    {
+        return Err(StatusCode::FORBIDDEN);
+    }
     if !auth::revoke_api_key(&state.pool, &id).await? {
         return Err(StatusCode::NOT_FOUND);
     }

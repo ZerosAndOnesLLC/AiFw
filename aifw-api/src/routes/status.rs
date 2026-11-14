@@ -165,7 +165,18 @@ pub async fn issue_ws_ticket(
     State(state): State<AppState>,
     auth_user: axum::Extension<crate::auth::AuthUser>,
 ) -> Json<serde_json::Value> {
-    let ticket = state.ws_tickets.issue(&auth_user.user_id).await;
+    // The ticket carries exactly what this credential may do — a narrowed
+    // API key must not be able to trade itself for its owner's rights.
+    let ticket = state
+        .ws_tickets
+        .issue(crate::auth::ws_ticket::TicketGrant {
+            user_id: auth_user.user_id.clone(),
+            permissions: Some(auth_user.permissions.to_bits()),
+            role: Some(auth_user.role.clone()),
+            api_key_id: auth_user.api_key_id.clone(),
+            api_key_name: auth_user.api_key_name.clone(),
+        })
+        .await;
     Json(serde_json::json!({ "ticket": ticket, "expires_in_seconds": 30 }))
 }
 

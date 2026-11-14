@@ -120,6 +120,13 @@ pub async fn create_nat_rule(
         ),
         _ => None,
     };
+    if let Some(ref s) = req.status {
+        rule.status = match s.as_str() {
+            "active" => NatStatus::Active,
+            "disabled" => NatStatus::Disabled,
+            _ => return Err(nat_bad_request(format!("unknown status '{s}'"))),
+        };
+    }
 
     let rule = state.nat_engine.add(rule).await.map_err(nat_engine_error)?;
     state.set_pending(|p| p.nat = true).await;
@@ -238,15 +245,35 @@ pub async fn reorder_nat_rules(
     State(state): State<AppState>,
     Json(req): Json<ReorderRequest>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
-    // Update order by setting created_at timestamps in sequence
-    for (i, id_str) in req.rule_ids.iter().enumerate() {
-        let uuid = Uuid::parse_str(id_str).map_err(|_| bad_request())?;
-        let _ = sqlx::query("UPDATE nat_rules SET created_at = datetime('2000-01-01', '+' || ?2 || ' seconds') WHERE id = ?1")
+    // Update order by setting created_at timestamps in sequence. All ids
+    // must exist; one transaction so a bad id doesn't leave half an order.
+    let ids = req
+        .rule_ids
+        .iter()
+        .map(|s| Uuid::parse_str(s).map_err(|_| bad_request()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut tx = state.pool.begin().await.map_err(|e| {
+        tracing::error!(error = %e, "nat reorder: begin");
+        internal()
+    })?;
+    for (i, uuid) in ids.iter().enumerate() {
+        let res = sqlx::query("UPDATE nat_rules SET created_at = datetime('2000-01-01', '+' || ?2 || ' seconds') WHERE id = ?1")
             .bind(uuid.to_string())
             .bind(i as i64)
-            .execute(&state.pool)
-            .await;
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "nat reorder: update");
+                internal()
+            })?;
+        if res.rows_affected() == 0 {
+            return Err(StatusCode::NOT_FOUND);
+        }
     }
+    tx.commit().await.map_err(|e| {
+        tracing::error!(error = %e, "nat reorder: commit");
+        internal()
+    })?;
     state.set_pending(|p| p.nat = true).await;
     Ok(Json(MessageResponse {
         message: format!("{} NAT rules reordered", req.rule_ids.len()),

@@ -576,3 +576,168 @@ async fn api_key_can_update_and_delete_users() {
         .unwrap();
     assert_eq!(actor, admin_id, "audit records the key's owner");
 }
+
+async fn ticket_for(server: &TestServer, key: &str) -> String {
+    let (n, v) = api_key_header(key);
+    let r: Value = server
+        .post("/api/v1/auth/ws-ticket")
+        .add_header(n, v)
+        .await
+        .json();
+    r["ticket"].as_str().unwrap().to_string()
+}
+
+/// A ws-ticket carries the requesting credential's permissions and API-key
+/// identity: a narrowed key can't trade itself for its owner's rights.
+#[tokio::test]
+async fn ticket_from_a_narrowed_key_stays_narrowed() {
+    let (server, _) = app_with_pool().await;
+    let admin = create_user_and_login(&server).await;
+    let key = mint(
+        &server,
+        &admin,
+        json!({"name": "ro", "role_id": "builtin-viewer"}),
+    )
+    .await
+    .json::<Value>()["key"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Reads through a ticket keep working…
+    let t = ticket_for(&server, &key).await;
+    server
+        .get(&format!("/api/v1/rules?ticket={t}"))
+        .await
+        .assert_status_ok();
+    // …and report the narrowed identity.
+    let t = ticket_for(&server, &key).await;
+    let me: Value = server
+        .get(&format!("/api/v1/auth/me?ticket={t}"))
+        .await
+        .json();
+    assert_eq!(me["role"], "viewer");
+    let t = ticket_for(&server, &key).await;
+    server
+        .get(&format!("/api/v1/auth/users?ticket={t}"))
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+
+    // Tickets never authorize writes, whoever issued them.
+    for path in ["/api/v1/auth/api-keys", "/api/v1/auth/users"] {
+        let t = ticket_for(&server, &key).await;
+        server
+            .post(&format!("{path}?ticket={t}"))
+            .json(&json!({"name": "x", "username": "x", "password": "LongEnough123!"}))
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+    }
+    let t: Value = server
+        .post("/api/v1/auth/ws-ticket")
+        .authorization_bearer(&admin)
+        .await
+        .json();
+    server
+        .post(&format!(
+            "/api/v1/auth/api-keys?ticket={}",
+            t["ticket"].as_str().unwrap()
+        ))
+        .json(&json!({"name": "x"}))
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn a_key_can_only_revoke_itself() {
+    let (server, _) = app_with_pool().await;
+    let admin = create_user_and_login(&server).await;
+    let narrow: Value = mint(
+        &server,
+        &admin,
+        json!({"name": "ro", "role_id": "builtin-viewer"}),
+    )
+    .await
+    .json();
+    let full: Value = mint(&server, &admin, json!({"name": "full"})).await.json();
+    let (n, v) = api_key_header(narrow["key"].as_str().unwrap());
+    server
+        .delete(&format!(
+            "/api/v1/auth/api-keys/{}",
+            full["id"].as_str().unwrap()
+        ))
+        .add_header(n.clone(), v.clone())
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    server
+        .delete(&format!(
+            "/api/v1/auth/api-keys/{}",
+            narrow["id"].as_str().unwrap()
+        ))
+        .add_header(n, v)
+        .await
+        .assert_status_ok();
+}
+
+/// Service accounts (daemon/cluster peer, on-box CLI) can't be deleted,
+/// disabled or re-roled through the user API.
+#[tokio::test]
+async fn service_accounts_are_protected() {
+    let (server, pool) = app_with_pool().await;
+    let admin = create_user_and_login(&server).await;
+    server
+        .post("/api/v1/cluster/loopback-key/generate")
+        .authorization_bearer(&admin)
+        .await
+        .assert_status_ok();
+    let (id,): (String,) = sqlx::query_as("SELECT id FROM users WHERE auth_provider = 'system'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    server
+        .put(&format!("/api/v1/auth/users/{id}"))
+        .authorization_bearer(&admin)
+        .json(&json!({"enabled": false}))
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    server
+        .delete(&format!("/api/v1/auth/users/{id}"))
+        .authorization_bearer(&admin)
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn create_honours_status_and_nat_reorder_checks_ids() {
+    let (server, _) = app_with_pool().await;
+    let admin = create_user_and_login(&server).await;
+    let mut rule = serde_json::to_value(any_tcp_rule()).unwrap();
+    rule["status"] = json!("disabled");
+    let r: Value = server
+        .post("/api/v1/rules")
+        .authorization_bearer(&admin)
+        .json(&rule)
+        .await
+        .json();
+    assert_eq!(r["data"]["status"], "disabled");
+
+    let nat: Value = server
+        .post("/api/v1/nat")
+        .authorization_bearer(&admin)
+        .json(&json!({"nat_type": "masquerade", "interface": "em0", "protocol": "any", "status": "disabled"}))
+        .await
+        .json();
+    assert_eq!(nat["data"]["status"], "disabled");
+
+    server
+        .put("/api/v1/nat/reorder")
+        .authorization_bearer(&admin)
+        .json(&json!({"rule_ids": [nat["data"]["id"], "00000000-0000-0000-0000-000000000000"]}))
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+    server
+        .put("/api/v1/nat/reorder")
+        .authorization_bearer(&admin)
+        .json(&json!({"rule_ids": [nat["data"]["id"]]}))
+        .await
+        .assert_status_ok();
+}

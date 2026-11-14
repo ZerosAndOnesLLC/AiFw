@@ -503,6 +503,7 @@ mod allowlist_tests {
             "/usr/local/etc/swanctl/x509/aifw-*.pem",
             "/usr/local/etc/swanctl/x509ca/aifw-*.pem",
             "/usr/local/etc/newsyslog.conf.d/aifw.conf",
+            "/etc/cron.d/aifw-updates",
         ] {
             assert!(
                 helper.contains(path),
