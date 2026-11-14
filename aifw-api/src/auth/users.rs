@@ -182,30 +182,37 @@ pub async fn update_user(
 }
 
 pub async fn delete_user(pool: &SqlitePool, user_id: &str) -> Result<(), StatusCode> {
+    let db_err = |e: sqlx::Error| {
+        tracing::error!(error = %e, "auth: failed to delete user");
+        StatusCode::INTERNAL_SERVER_ERROR
+    };
+    // Child rows reference users(id) with enforced foreign keys, so they go
+    // first; one transaction keeps a failed delete from leaving the user
+    // half-cleaned (e.g. keys gone but account still there).
+    let mut tx = pool.begin().await.map_err(db_err)?;
+    for table in [
+        "refresh_tokens",
+        "recovery_codes",
+        "api_keys",
+        "oauth_identities",
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DELETE FROM {table} WHERE user_id = ?1"
+        )))
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+    }
     let result = sqlx::query("DELETE FROM users WHERE id = ?1")
         .bind(user_id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "auth: failed to delete user");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+        .map_err(db_err)?;
     if result.rows_affected() == 0 {
         return Err(StatusCode::NOT_FOUND);
     }
-    // Clean up related data
-    let _ = sqlx::query("DELETE FROM refresh_tokens WHERE user_id = ?1")
-        .bind(user_id)
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("DELETE FROM recovery_codes WHERE user_id = ?1")
-        .bind(user_id)
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("DELETE FROM api_keys WHERE user_id = ?1")
-        .bind(user_id)
-        .execute(pool)
-        .await;
+    tx.commit().await.map_err(db_err)?;
     Ok(())
 }
 

@@ -105,7 +105,8 @@ AiFw/
 ├── aifw-api/           # Axum REST API server (JWT + API key auth)
 ├── aifw-tui/           # ratatui terminal UI
 ├── aifw-daemon/        # Main firewall daemon
-├── aifw-cli/           # CLI tool
+├── aifw-client/        # Async REST API client + TLS pinning (used by the CLI and daemon)
+├── aifw-cli/           # `aifw` CLI — API client for one or many firewalls
 └── aifw-ui/            # NextJS web interface
 ```
 
@@ -141,35 +142,35 @@ cd aifw-ui && npm install && npm run dev
 
 ## CLI Usage
 
+`aifw` talks to the REST API — as root on the appliance with no setup, or from
+any machine after `aifw login`. Full reference: [docs/docs/cli.md](docs/docs/cli.md).
+
 ```bash
-# Rules
-aifw rules add --action pass --direction in --proto tcp --dst-port 443 --label "allow-https"
-aifw rules add --action block --direction in --proto tcp --dst-port 22 --src 10.0.0.0/8
-aifw rules list
-aifw rules remove <uuid>
+# From a laptop: save the firewall as a context (pins its TLS certificate)
+aifw login https://fw1.example.com:8080 --context fw1
 
-# NAT
-aifw nat add --type snat --interface em0 --src 192.168.1.0/24 --redirect 203.0.113.1
+# Rules and NAT are staged like in the UI; apply when ready
+aifw rules add --action pass --proto tcp --dst-port 443 --label allow-https
 aifw nat add --type dnat --interface em0 --proto tcp --dst-port 80 --redirect 192.168.1.10 --redirect-port 8080
-aifw nat list
+aifw pending && aifw apply
 
-# Rate limiting
-aifw ratelimit add --name ssh-protect --proto tcp --max-conn 5 --window 30 --table bruteforce --dst-port 22
-aifw queue add --name voip --interface em0 --type priq --bandwidth 100Mb --class voip
+# Risky remote change: arm an auto-rollback first, then confirm
+aifw confirm arm --timeout 5m && aifw rules edit <id> --action block --apply && aifw confirm accept
 
-# VPN
-aifw vpn wg-add --name wg0 --interface wg0 --port 51820 --address 10.0.0.1/24
-aifw vpn wg-peer-add --tunnel <id> --name laptop --pubkey <key> --endpoint 1.2.3.4:51820
-aifw vpn ipsec-add --name office --remote 198.51.100.1 --psk <secret> --local-ts 10.0.0.0/24 --remote-ts 10.1.0.0/24
+# VPN, DNS, certificates, users
+aifw vpn wg add --name road --address 10.8.0.1/24
+aifw vpn wg peers add <tunnel> --name laptop --generate-key
+aifw dns add-host nas home.arpa 192.168.1.20 && aifw dns apply
+aifw ca certs issue --type server --common-name vpn.lan --out-dir ./certs
+aifw api-keys create --name ci --role builtin-viewer --expires-days 30
 
-# Geo-IP
-aifw geoip add --country CN --action block
-aifw geoip add --country US --action allow
-aifw geoip lookup 1.2.3.4
+# Scripts: JSON output and stable exit codes; read-only fan-out across firewalls
+aifw rules list -o json | jq '.data[] | select(.action == "block")'
+aifw --all-contexts cluster verify -o json
 
-# Status & reload
-aifw status
-aifw reload
+# API down? Break-glass, root on the appliance
+aifw local reload
+aifw local update rollback
 ```
 
 ## REST API

@@ -1,137 +1,111 @@
-//! `aifw plugins …` — view and configure built-in plugins.
-//!
-//! Configuration (`enable`, `disable`, `set`, `reset`) is written to the
-//! same `plugin_config` table the API uses, through the same schema
-//! validation, so it works whether or not aifw-api is running; the API
-//! applies it within ~10 seconds. Runtime views (`status`, `logs`, `run`)
-//! come from the API, which owns the running plugins; they need a token
-//! (`AIFW_TOKEN`, or `/var/db/aifw/cli.token`).
+//! `aifw plugins …` — built-in plugins (threat feeds, notifier, …) via the
+//! API. Setting types come from the plugin's schema as served by the
+//! appliance, so the CLI parses `key=value` the way that version expects.
 
-use std::path::Path;
-use std::time::Duration;
-
-use aifw_core::Database;
-use aifw_plugins::schema::{FieldKind, ListItem, SettingField, effective};
-use aifw_plugins::store::{PluginStore, StoredConfig};
-use aifw_plugins::{Plugin, SettingsPatch, registry};
+use aifw_plugins::schema::{FieldKind, ListItem, SettingField};
+use clap::Subcommand;
 use serde_json::{Map, Value, json};
 
-use super::cluster::{AIFW_API_BASE, read_api_token};
+use crate::cli::exit::CliError;
+use crate::cli::{Ctx, Format, col, prompt};
 
-const APPLY_NOTE: &str = "The running aifw-api applies the change within ~10 seconds.";
-/// How long `enable` / `disable` wait for the API to report the new state.
-const APPLY_WAIT: Duration = Duration::from_secs(15);
+#[derive(Debug, Subcommand)]
+pub enum PluginsCmd {
+    /// List plugins with their state
+    #[command(visible_alias = "ls")]
+    List {
+        #[arg(long, hide = true)]
+        json: bool,
+    },
+    /// Show a plugin's settings and actions
+    Show {
+        name: String,
+        #[arg(long, hide = true)]
+        json: bool,
+    },
+    /// Enable a plugin
+    Enable { name: String },
+    /// Disable a plugin
+    Disable { name: String },
+    /// Change settings: key=value pairs, --secret key=value, --secret-stdin key, --unset key
+    #[command(after_help = "\
+EXAMPLES:
+    # Refresh threat feeds every 6 hours from two lists
+    aifw plugins set threat-feeds refresh_hours=6 feeds=spamhaus-drop,feodo
 
-async fn open_store(db_path: &Path) -> anyhow::Result<PluginStore> {
-    let db = Database::new(db_path).await?;
-    let store = PluginStore::new(db.pool().clone());
-    store.migrate().await?;
-    Ok(store)
+    # Never block an upstream partner's network
+    aifw plugins set threat-feeds allowlist=198.51.100.0/24
+
+    # Send notifications to an ntfy topic (secrets go through --secret)
+    aifw plugins set notifier --secret ntfy_url=https://ntfy.sh/my-topic
+
+    # Read a secret from stdin so it stays out of shell history and ps
+    printf '%s' \"$TOKEN\" | aifw plugins set notifier --secret-stdin ntfy_token
+
+    # Back to the default
+    aifw plugins set threat-feeds --unset refresh_hours")]
+    Set {
+        name: String,
+        values: Vec<String>,
+        #[arg(long = "secret", value_name = "KEY=VALUE")]
+        secrets: Vec<String>,
+        #[arg(long = "secret-stdin", value_name = "KEY")]
+        secret_stdin: Option<String>,
+        #[arg(long = "unset", value_name = "KEY")]
+        unset: Vec<String>,
+    },
+    /// Reset a plugin to defaults (and disable it)
+    Reset {
+        name: String,
+        #[arg(short, long)]
+        yes: bool,
+    },
+    /// Runtime state, counters and live status (all plugins by default)
+    Status {
+        name: Option<String>,
+        #[arg(long, hide = true)]
+        json: bool,
+    },
+    /// Recent log entries
+    Logs {
+        name: String,
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        #[arg(long, default_value = "info", value_parser = ["info", "warn", "error"])]
+        level: String,
+        #[arg(long, hide = true)]
+        json: bool,
+    },
+    /// Run a plugin action
+    #[command(after_help = "\
+EXAMPLES:
+    aifw plugins run threat-feeds refresh
+    aifw plugins run threat-feeds lookup ip=203.0.113.9
+    aifw plugins run notifier test channel=ntfy")]
+    Run {
+        name: String,
+        action: String,
+        args: Vec<String>,
+        #[arg(long, hide = true)]
+        json: bool,
+    },
 }
-
-fn find(name: &str) -> anyhow::Result<std::sync::Arc<dyn Plugin>> {
-    registry::find(name).ok_or_else(|| {
-        let known: Vec<String> = registry::builtins().iter().map(|p| p.info().name).collect();
-        anyhow::anyhow!("unknown plugin '{name}' (available: {})", known.join(", "))
-    })
-}
-
-// ---- API access -------------------------------------------------------------
-
-/// Why the API could not be asked; the caller decides how loud to be.
-pub(super) enum ApiUnavailable {
-    /// Connection refused / timed out: aifw-api is not running here.
-    Down,
-    /// 401/403: no (usable) token.
-    Unauthorized,
-    /// Anything else, with the server's message.
-    Other(String),
-}
-
-impl std::fmt::Display for ApiUnavailable {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ApiUnavailable::Down => write!(f, "aifw-api is not reachable at {AIFW_API_BASE}"),
-            ApiUnavailable::Unauthorized => write!(
-                f,
-                "the API refused the request: set AIFW_TOKEN to an API key with read access \
-                 to this resource (and write access for commands that change it)"
-            ),
-            ApiUnavailable::Other(m) => f.write_str(m),
-        }
-    }
-}
-
-pub(super) async fn api(
-    method: reqwest::Method,
-    path: &str,
-    body: Option<&Value>,
-) -> Result<Value, ApiUnavailable> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(130))
-        .connect_timeout(Duration::from_secs(2))
-        .build()
-        .map_err(|e| ApiUnavailable::Other(e.to_string()))?;
-    let mut req = client.request(method, format!("{AIFW_API_BASE}{path}"));
-    let token = read_api_token();
-    if !token.is_empty() {
-        req = req.header("Authorization", format!("Bearer {token}"));
-    }
-    if let Some(b) = body {
-        req = req.json(b);
-    }
-    let resp = req.send().await.map_err(|e| {
-        if e.is_connect() || e.is_timeout() {
-            ApiUnavailable::Down
-        } else {
-            ApiUnavailable::Other(e.without_url().to_string())
-        }
-    })?;
-    let status = resp.status();
-    let text = resp.text().await.unwrap_or_default();
-    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-        return Err(ApiUnavailable::Unauthorized);
-    }
-    let value: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
-    if !status.is_success() {
-        let msg = value["message"]
-            .as_str()
-            .map(str::to_string)
-            .unwrap_or_else(|| format!("HTTP {status}"));
-        return Err(ApiUnavailable::Other(msg));
-    }
-    Ok(value)
-}
-
-fn plugin_path(name: &str, rest: &str) -> String {
-    format!("/api/v1/plugins/{name}{rest}")
-}
-
-// ---- formatting ---------------------------------------------------------------
 
 fn kind_label(f: &SettingField) -> String {
+    let opts = |o: &[aifw_plugins::schema::SelectOption]| {
+        o.iter()
+            .map(|o| o.value.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     match &f.kind {
         FieldKind::Bool => "bool".into(),
         FieldKind::Integer { min, max } => format!("integer {min}-{max}"),
         FieldKind::Text { .. } => "text".into(),
         FieldKind::Url { https_only: true } => "https url".into(),
         FieldKind::Url { .. } => "url".into(),
-        FieldKind::Select { options } => format!(
-            "one of: {}",
-            options
-                .iter()
-                .map(|o| o.value.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        FieldKind::MultiSelect { options } => format!(
-            "comma list of: {}",
-            options
-                .iter()
-                .map(|o| o.value.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
+        FieldKind::Select { options } => format!("one of: {}", opts(options)),
+        FieldKind::MultiSelect { options } => format!("comma list of: {}", opts(options)),
         FieldKind::List { item, max_items } => format!(
             "comma list of {} (max {max_items})",
             match item {
@@ -163,52 +137,58 @@ fn show_value(v: &Value) -> String {
     }
 }
 
-/// One line per key of a JSON object, nested objects and object lists
-/// indented, for action results and live status.
-fn print_object(v: &Value, indent: usize) {
+/// Indented key/value rendering of an arbitrary JSON object (action
+/// results, live status).
+fn render_object(v: &Value, indent: usize, out: &mut Vec<String>) {
     let pad = " ".repeat(indent);
     match v {
         Value::Object(m) => {
             for (k, v) in m {
                 match v {
                     Value::Object(_) => {
-                        println!("{pad}{k}:");
-                        print_object(v, indent + 2);
+                        out.push(format!("{pad}{k}:"));
+                        render_object(v, indent + 2, out);
                     }
                     Value::Array(a) if a.iter().any(Value::is_object) => {
-                        println!("{pad}{k}:");
+                        out.push(format!("{pad}{k}:"));
                         for item in a {
                             if item.is_object() {
-                                println!("{pad}  -");
-                                print_object(item, indent + 4);
+                                out.push(format!("{pad}  -"));
+                                render_object(item, indent + 4, out);
                             } else {
-                                println!("{pad}  - {}", show_value(item));
+                                out.push(format!("{pad}  - {}", show_value(item)));
                             }
                         }
                     }
-                    other => println!("{pad}{k}: {}", show_value(other)),
+                    other => out.push(format!("{pad}{k}: {}", show_value(other))),
                 }
             }
         }
-        other => println!("{pad}{}", show_value(other)),
+        other => out.push(format!("{pad}{}", show_value(other))),
     }
 }
 
-/// Parse `raw` into the JSON shape `field` expects. Validation proper
-/// (ranges, allowed values) happens in the shared schema check.
-fn parse_value(field: &SettingField, raw: &str) -> anyhow::Result<Value> {
+/// Parse `raw` into the JSON shape `field` expects. Range/option checks
+/// are the server's job.
+pub fn parse_value(field: &SettingField, raw: &str) -> Result<Value, CliError> {
     let raw = raw.trim();
     Ok(match &field.kind {
         FieldKind::Bool => match raw.to_ascii_lowercase().as_str() {
             "true" | "yes" | "on" | "1" => Value::Bool(true),
             "false" | "no" | "off" | "0" => Value::Bool(false),
-            _ => anyhow::bail!("{}: expected true/false, got '{raw}'", field.key),
+            _ => {
+                return Err(CliError::Usage(format!(
+                    "{}: expected true/false, got '{raw}'",
+                    field.key
+                )));
+            }
         },
-        FieldKind::Integer { .. } => {
-            Value::from(raw.parse::<i64>().map_err(|_| {
-                anyhow::anyhow!("{}: expected a whole number, got '{raw}'", field.key)
-            })?)
-        }
+        FieldKind::Integer { .. } => Value::from(raw.parse::<i64>().map_err(|_| {
+            CliError::Usage(format!(
+                "{}: expected a whole number, got '{raw}'",
+                field.key
+            ))
+        })?),
         FieldKind::MultiSelect { .. } | FieldKind::List { .. } => Value::Array(
             raw.split(',')
                 .map(str::trim)
@@ -220,9 +200,9 @@ fn parse_value(field: &SettingField, raw: &str) -> anyhow::Result<Value> {
     })
 }
 
-fn split_kv(arg: &str) -> anyhow::Result<(&str, &str)> {
+fn split_kv(arg: &str) -> Result<(&str, &str), CliError> {
     arg.split_once('=')
-        .ok_or_else(|| anyhow::anyhow!("expected key=value, got '{arg}'"))
+        .ok_or_else(|| CliError::Usage(format!("expected key=value, got '{arg}'")))
 }
 
 fn state_line(p: &Value) -> String {
@@ -233,430 +213,386 @@ fn state_line(p: &Value) -> String {
     }
 }
 
-// ---- commands -----------------------------------------------------------------
-
-pub async fn plugins_list(db_path: &Path, json: bool) -> anyhow::Result<()> {
-    let store = open_store(db_path).await?;
-    // Runtime state comes from the API when it can be asked.
-    let live = api(reqwest::Method::GET, "/api/v1/plugins", None).await;
-    let state_of = |name: &str| -> Option<String> {
-        live.as_ref().ok().and_then(|v| {
-            v["plugins"]
-                .as_array()?
-                .iter()
-                .find(|p| p["name"] == name)
-                .map(state_line)
-        })
-    };
-    let mut rows = Vec::new();
-    for p in registry::builtins() {
-        let info = p.info();
-        let cfg = store.load(&info.name).await?;
-        let state = state_of(&info.name);
-        rows.push((info, cfg.enabled, state));
-    }
-    if json {
-        let out: Vec<Value> = rows
-            .iter()
-            .map(|(i, enabled, state)| {
-                json!({"name": i.name, "title": i.title, "version": i.version,
-                       "enabled": enabled, "state": state})
-            })
-            .collect();
-        println!("{}", serde_json::to_string_pretty(&out)?);
-        return Ok(());
-    }
-    println!(
-        "  {:<16} {:<22} {:<9} {:<10} DESCRIPTION",
-        "NAME", "TITLE", "ENABLED", "STATE"
-    );
-    for (i, enabled, state) in rows {
-        println!(
-            "  {:<16} {:<22} {:<9} {:<10} {}",
-            i.name,
-            i.title,
-            if enabled { "yes" } else { "no" },
-            state.as_deref().unwrap_or("-"),
-            i.description
-        );
-    }
-    if let Err(e) = live {
-        println!("\nState unavailable: {e}.");
-    }
-    Ok(())
+fn schema_of(detail: &Value, ptr: &str) -> Vec<SettingField> {
+    detail
+        .pointer(ptr)
+        .cloned()
+        .and_then(|s| serde_json::from_value(s).ok())
+        .unwrap_or_default()
 }
 
-pub async fn plugins_show(db_path: &Path, name: &str, json: bool) -> anyhow::Result<()> {
-    let plugin = find(name)?;
-    let store = open_store(db_path).await?;
-    let cfg = store.load(name).await?;
-    let schema = plugin.settings_schema();
-    // Secrets are only ever shown as set / not set, so they stay out of the
-    // effective map that is printed.
-    let eff = effective(&schema, &cfg.values, &Map::new()).into_map();
-    let info = plugin.info();
-    let secrets_set: Vec<&str> = schema
-        .iter()
-        .filter(|f| f.secret && cfg.secrets.contains_key(&f.key))
-        .map(|f| f.key.as_str())
-        .collect();
-
-    if json {
-        let settings: Map<String, Value> = schema
-            .iter()
-            .filter(|f| !f.secret)
-            .map(|f| {
-                (
-                    f.key.clone(),
-                    eff.get(&f.key).cloned().unwrap_or(Value::Null),
+pub async fn run(ctx: &mut Ctx, cmd: PluginsCmd) -> anyhow::Result<()> {
+    let client = ctx.client()?;
+    match cmd {
+        PluginsCmd::List { json } => {
+            if json {
+                ctx.force_format(Format::Json);
+            }
+            let v = client.get("/plugins").await?;
+            if ctx.format().is_structured() {
+                return ctx.raw(&v);
+            }
+            ctx.list_mapped(
+                &json!({ "data": v["plugins"] }),
+                &[
+                    col("NAME", "/name"),
+                    col("TITLE", "/title"),
+                    col("ENABLED", "/enabled"),
+                    col("STATE", "/_state"),
+                    col("DESCRIPTION", "/description"),
+                ],
+                |p| {
+                    let mut r = p.clone();
+                    r["_state"] = json!(state_line(p));
+                    r
+                },
+            )
+        }
+        PluginsCmd::Show { name, json } => {
+            if json {
+                ctx.force_format(Format::Json);
+            }
+            let d = client.get(&format!("/plugins/{name}")).await?;
+            if ctx.format().is_structured() {
+                return ctx.raw(&d);
+            }
+            show(ctx, &name, &d);
+            Ok(())
+        }
+        PluginsCmd::Enable { name } => set_enabled(ctx, &client, &name, true).await,
+        PluginsCmd::Disable { name } => set_enabled(ctx, &client, &name, false).await,
+        PluginsCmd::Set {
+            name,
+            values,
+            secrets,
+            secret_stdin,
+            unset,
+        } => {
+            if values.is_empty() && secrets.is_empty() && secret_stdin.is_none() && unset.is_empty()
+            {
+                return Err(CliError::Usage(
+                    "nothing to change — pass key=value pairs, --secret key=value, --secret-stdin key or --unset key".into(),
                 )
-            })
-            .collect();
-        let actions: Vec<Value> = plugin
-            .actions()
-            .iter()
-            .map(|a| {
-                json!({"id": a.id, "label": a.label, "description": a.description,
-                       "args": a.args.iter().map(|f| f.key.clone()).collect::<Vec<_>>()})
-            })
-            .collect();
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&json!({
-                "name": info.name,
-                "title": info.title,
-                "version": info.version,
-                "enabled": cfg.enabled,
-                "settings": settings,
-                "secrets_set": secrets_set,
-                "actions": actions,
-            }))?
-        );
-        return Ok(());
+                .into());
+            }
+            let d = client.get(&format!("/plugins/{name}")).await?;
+            let schema = schema_of(&d, "/schema");
+            let field = |key: &str| {
+                schema.iter().find(|f| f.key == key).ok_or_else(|| {
+                    CliError::Usage(format!(
+                        "'{name}' has no setting '{key}' — see `aifw plugins show {name}`"
+                    ))
+                })
+            };
+            let mut vals = Map::new();
+            let mut secs = Map::new();
+            for arg in &values {
+                let (k, raw) = split_kv(arg)?;
+                let f = field(k)?;
+                if f.secret {
+                    return Err(CliError::Usage(format!(
+                        "'{k}' is a secret — use --secret {k}=… or --secret-stdin {k}"
+                    ))
+                    .into());
+                }
+                vals.insert(k.to_string(), parse_value(f, raw)?);
+            }
+            for arg in &secrets {
+                let (k, raw) = split_kv(arg)?;
+                if !field(k)?.secret {
+                    return Err(CliError::Usage(format!(
+                        "'{k}' is not a secret — pass it as {k}=…"
+                    ))
+                    .into());
+                }
+                secs.insert(k.to_string(), json!(raw.trim()));
+            }
+            if let Some(k) = &secret_stdin {
+                if !field(k)?.secret {
+                    return Err(CliError::Usage(format!(
+                        "'{k}' is not a secret — pass it as {k}=…"
+                    ))
+                    .into());
+                }
+                let s = prompt::read_line_raw(&mut ctx.io)?.trim().to_string();
+                if s.is_empty() {
+                    return Err(
+                        CliError::Usage(format!("--secret-stdin {k}: nothing on stdin")).into(),
+                    );
+                }
+                secs.insert(k.clone(), json!(s));
+            }
+            for k in &unset {
+                let target = if field(k)?.secret {
+                    &mut secs
+                } else {
+                    &mut vals
+                };
+                target.insert(k.clone(), Value::Null);
+            }
+            let v = client
+                .patch(
+                    &format!("/plugins/{name}/settings"),
+                    &json!({ "values": vals, "secrets": secs }),
+                )
+                .await?;
+            if ctx.format().is_structured() {
+                return ctx.raw(&v);
+            }
+            ctx.io.println(&format!(
+                "{} settings saved.",
+                v["title"].as_str().unwrap_or(&name)
+            ));
+            Ok(())
+        }
+        PluginsCmd::Reset { name, yes } => {
+            ctx.confirm(&format!("Reset {name} to defaults and disable it?"), yes)?;
+            let v = client.post_empty(&format!("/plugins/{name}/reset")).await?;
+            if ctx.format().is_structured() {
+                return ctx.raw(&v);
+            }
+            ctx.io.println(&format!(
+                "{} reset to defaults and disabled.",
+                v["title"].as_str().unwrap_or(&name)
+            ));
+            Ok(())
+        }
+        PluginsCmd::Status { name, json } => {
+            if json {
+                ctx.force_format(Format::Json);
+            }
+            let names: Vec<String> = match name {
+                Some(n) => vec![n],
+                None => client.get("/plugins").await?["plugins"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|p| p["name"].as_str().map(str::to_string))
+                    .collect(),
+            };
+            let mut out = Vec::new();
+            for n in &names {
+                let summary = client.get(&format!("/plugins/{n}")).await?;
+                let status = if summary["state"] == "running" {
+                    client
+                        .get(&format!("/plugins/{n}/status"))
+                        .await
+                        .unwrap_or(Value::Null)
+                } else {
+                    Value::Null
+                };
+                out.push(json!({ "plugin": summary, "status": status }));
+            }
+            if ctx.format().is_structured() {
+                return ctx.raw(&Value::Array(out));
+            }
+            let mut lines = Vec::new();
+            for (i, e) in out.iter().enumerate() {
+                let s = &e["plugin"];
+                if i > 0 {
+                    lines.push(String::new());
+                }
+                lines.push(format!(
+                    "{} ({}): {}",
+                    s["title"].as_str().unwrap_or("?"),
+                    s["name"].as_str().unwrap_or("?"),
+                    state_line(s)
+                ));
+                if let Some(at) = s["started_at"].as_str() {
+                    lines.push(format!("  Started: {at}"));
+                }
+                let st = &s["stats"];
+                lines.push(format!(
+                    "  Events: {}  actions: {}  errors: {}  timeouts: {}  panics: {}",
+                    st["events"], st["actions"], st["errors"], st["timeouts"], st["panics"]
+                ));
+                if let Some(rules) = s["rules"].as_array().filter(|r| !r.is_empty()) {
+                    lines.push("  pf rules:".into());
+                    lines.extend(rules.iter().map(|r| format!("    {}", show_value(r))));
+                }
+                if !e["status"].is_null() {
+                    lines.push("  Live status:".into());
+                    render_object(&e["status"], 4, &mut lines);
+                }
+            }
+            ctx.io.println(&lines.join("\n"));
+            Ok(())
+        }
+        PluginsCmd::Logs {
+            name,
+            limit,
+            level,
+            json,
+        } => {
+            if json {
+                ctx.force_format(Format::Json);
+            }
+            let v = client
+                .get(&format!(
+                    "/plugins/{name}/logs?limit={}&level={level}",
+                    limit.clamp(1, 500)
+                ))
+                .await?;
+            let entries = v["entries"].as_array().cloned().unwrap_or_default();
+            if ctx.format().is_structured() {
+                return ctx.raw(&Value::Array(entries));
+            }
+            if entries.is_empty() {
+                ctx.io.eprintln("No entries.");
+            }
+            for e in entries.iter().rev() {
+                ctx.io.println(&format!(
+                    "{}  {:<5} {}",
+                    e["ts"].as_str().unwrap_or("-"),
+                    e["level"].as_str().unwrap_or("-"),
+                    e["message"].as_str().unwrap_or("")
+                ));
+            }
+            Ok(())
+        }
+        PluginsCmd::Run {
+            name,
+            action,
+            args,
+            json,
+        } => {
+            if json {
+                ctx.force_format(Format::Json);
+            }
+            let d = client.get(&format!("/plugins/{name}")).await?;
+            let actions = d["actions"].as_array().cloned().unwrap_or_default();
+            let info = actions
+                .iter()
+                .find(|a| a["id"] == json!(action))
+                .ok_or_else(|| {
+                    let known: Vec<&str> =
+                        actions.iter().filter_map(|a| a["id"].as_str()).collect();
+                    CliError::Usage(format!(
+                        "'{name}' has no action '{action}' (available: {})",
+                        known.join(", ")
+                    ))
+                })?;
+            let arg_schema: Vec<SettingField> =
+                serde_json::from_value(info["args"].clone()).unwrap_or_default();
+            let mut body = Map::new();
+            for arg in &args {
+                let (k, raw) = split_kv(arg)?;
+                let f = arg_schema.iter().find(|f| f.key == k).ok_or_else(|| {
+                    CliError::Usage(format!("action '{action}' has no argument '{k}'"))
+                })?;
+                body.insert(k.to_string(), parse_value(f, raw)?);
+            }
+            let label = info["label"].as_str().unwrap_or(&action).to_string();
+            // Actions may run up to the server's 120 s limit.
+            let v = client
+                .request_with_timeout(
+                    reqwest::Method::POST,
+                    &format!("/plugins/{name}/actions/{action}"),
+                    Some(&Value::Object(body)),
+                    ctx.slow_timeout(std::time::Duration::from_secs(150)),
+                )
+                .await?;
+            if ctx.format().is_structured() {
+                return ctx.raw(&v["result"]);
+            }
+            let mut lines = vec![format!("{label} finished.")];
+            render_object(&v["result"], 2, &mut lines);
+            ctx.io.println(&lines.join("\n"));
+            Ok(())
+        }
     }
+}
 
-    println!("{} ({}) v{}", info.title, info.name, info.version);
-    println!("  {}", info.description);
-    println!("  Enabled: {}", if cfg.enabled { "yes" } else { "no" });
-    let mut group: Option<&str> = None;
+fn show(ctx: &mut Ctx, name: &str, d: &Value) {
+    let schema = schema_of(d, "/schema");
+    let mut lines = vec![
+        format!(
+            "{} ({}) v{}",
+            d["title"].as_str().unwrap_or(name),
+            name,
+            d["version"].as_str().unwrap_or("?")
+        ),
+        format!("  {}", d["description"].as_str().unwrap_or("")),
+        format!(
+            "  Enabled: {}  State: {}",
+            if d["enabled"] == true { "yes" } else { "no" },
+            state_line(d)
+        ),
+    ];
+    let secrets_set: Vec<&str> = d["secrets_set"]
+        .as_array()
+        .map(|a| a.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    let mut group: Option<String> = None;
     for f in &schema {
-        let g = f.group.as_deref().unwrap_or("Settings");
-        if group != Some(g) {
-            println!("\n  [{g}]");
+        let g = f.group.clone().unwrap_or_else(|| "Settings".into());
+        if group.as_deref() != Some(g.as_str()) {
+            lines.push(format!("\n  [{g}]"));
             group = Some(g);
         }
         let value = if f.secret {
-            if cfg.secrets.contains_key(&f.key) {
-                "(set)".to_string()
+            if secrets_set.contains(&f.key.as_str()) {
+                "(set)".into()
             } else {
-                "(not set)".to_string()
+                "(not set)".into()
             }
         } else {
-            let v = show_value(eff.get(&f.key).unwrap_or(&Value::Null));
-            if cfg.values.contains_key(&f.key) {
+            let v = show_value(d["effective"].get(&f.key).unwrap_or(&Value::Null));
+            if d["values"].get(&f.key).is_some() {
                 v
             } else {
                 format!("{v}  (default)")
             }
         };
-        println!("  {:<28} {}", f.key, value);
-        println!("  {:<28} {} — {}", "", f.label, kind_label(f));
+        lines.push(format!("  {:<28} {}", f.key, value));
+        lines.push(format!("  {:<28} {} — {}", "", f.label, kind_label(f)));
     }
-    let actions = plugin.actions();
-    if !actions.is_empty() {
-        println!("\n  Actions (aifw plugins run {name} <action> [key=value…]):");
+    if let Some(actions) = d["actions"].as_array().filter(|a| !a.is_empty()) {
+        lines.push(format!(
+            "\n  Actions (aifw plugins run {name} <action> [key=value…]):"
+        ));
         for a in actions {
-            let args: Vec<String> = a.args.iter().map(|f| format!("{}=…", f.key)).collect();
-            println!("    {:<10} {} {}", a.id, a.description, args.join(" "));
+            let args: Vec<String> = a["args"]
+                .as_array()
+                .map(|x| {
+                    x.iter()
+                        .filter_map(|f| f["key"].as_str())
+                        .map(|k| format!("{k}=…"))
+                        .collect()
+                })
+                .unwrap_or_default();
+            lines.push(format!(
+                "    {:<10} {} {}",
+                a["id"].as_str().unwrap_or("?"),
+                a["description"].as_str().unwrap_or(""),
+                args.join(" ")
+            ));
         }
     }
-    Ok(())
+    ctx.io.println(&lines.join("\n"));
 }
 
-async fn save(store: &PluginStore, name: &str, cfg: &StoredConfig) -> anyhow::Result<()> {
-    store.save(name, cfg).await?;
-    Ok(())
-}
-
-/// After a config write, watch the API until it reports the plugin in the
-/// wanted state (or an error), then print what happened. Falls back to a
-/// hint when the API can't be asked.
-async fn report_apply(name: &str, want_enabled: bool) {
-    let deadline = tokio::time::Instant::now() + APPLY_WAIT;
-    loop {
-        match api(reqwest::Method::GET, &plugin_path(name, ""), None).await {
-            Ok(p) => {
-                let enabled = p["enabled"].as_bool().unwrap_or(!want_enabled);
-                let state = p["state"].as_str().unwrap_or("");
-                let settled = enabled == want_enabled
-                    && (!want_enabled || state == "running" || state == "error");
-                if settled {
-                    println!("Now {}.", state_line(&p));
-                    if state == "error" {
-                        println!("See `aifw plugins logs {name}` for details.");
-                    }
-                    return;
-                }
-            }
-            Err(e @ ApiUnavailable::Down) | Err(e @ ApiUnavailable::Unauthorized) => {
-                println!("{APPLY_NOTE} ({e}; check with `aifw plugins status {name}`.)");
-                return;
-            }
-            Err(ApiUnavailable::Other(m)) => {
-                println!("{APPLY_NOTE} (could not confirm: {m})");
-                return;
-            }
-        }
-        if tokio::time::Instant::now() >= deadline {
-            println!("{APPLY_NOTE} (not applied yet; check with `aifw plugins status {name}`.)");
-            return;
-        }
-        tokio::time::sleep(Duration::from_secs(1)).await;
-    }
-}
-
-pub async fn plugins_enable(db_path: &Path, name: &str, enabled: bool) -> anyhow::Result<()> {
-    let plugin = find(name)?;
-    let store = open_store(db_path).await?;
-    let mut cfg = store.load(name).await?;
-    cfg.set_enabled(&*plugin, enabled)?;
-    save(&store, name, &cfg).await?;
-    println!(
-        "{} {}.",
-        plugin.info().title,
-        if enabled { "enabled" } else { "disabled" }
-    );
-    report_apply(name, enabled).await;
-    Ok(())
-}
-
-fn read_stdin_line() -> anyhow::Result<String> {
-    let mut line = String::new();
-    std::io::stdin().read_line(&mut line)?;
-    let v = line.trim_end_matches(['\r', '\n']).to_string();
-    if v.is_empty() {
-        anyhow::bail!("--secret-stdin: nothing was read from stdin");
-    }
-    Ok(v)
-}
-
-pub async fn plugins_set(
-    db_path: &Path,
+async fn set_enabled(
+    ctx: &mut Ctx,
+    client: &aifw_client::Client,
     name: &str,
-    values: &[String],
-    secrets: &[String],
-    secret_stdin: Option<&str>,
-    unset: &[String],
+    on: bool,
 ) -> anyhow::Result<()> {
-    if values.is_empty() && secrets.is_empty() && secret_stdin.is_none() && unset.is_empty() {
-        anyhow::bail!(
-            "nothing to change — pass key=value pairs, --secret key=value, \
-             --secret-stdin key or --unset key"
-        );
+    let v = client
+        .put(
+            &format!("/plugins/{name}/enabled"),
+            &json!({ "enabled": on }),
+        )
+        .await?;
+    if ctx.format().is_structured() {
+        return ctx.raw(&v);
     }
-    let plugin = find(name)?;
-    let schema = plugin.settings_schema();
-    let field = |key: &str| {
-        schema.iter().find(|f| f.key == key).ok_or_else(|| {
-            anyhow::anyhow!("'{name}' has no setting '{key}' — see `aifw plugins show {name}`")
-        })
-    };
-    let mut patch = SettingsPatch::default();
-    for arg in values {
-        let (k, raw) = split_kv(arg)?;
-        let f = field(k)?;
-        if f.secret {
-            anyhow::bail!("'{k}' is a secret — use --secret {k}=… or --secret-stdin {k}");
-        }
-        patch.values.insert(k.to_string(), parse_value(f, raw)?);
-    }
-    for arg in secrets {
-        let (k, raw) = split_kv(arg)?;
-        let f = field(k)?;
-        if !f.secret {
-            anyhow::bail!("'{k}' is not a secret — pass it as {k}=…");
-        }
-        patch
-            .secrets
-            .insert(k.to_string(), Value::String(raw.trim().to_string()));
-    }
-    if let Some(k) = secret_stdin {
-        let f = field(k)?;
-        if !f.secret {
-            anyhow::bail!("'{k}' is not a secret — pass it as {k}=…");
-        }
-        patch
-            .secrets
-            .insert(k.to_string(), Value::String(read_stdin_line()?));
-    }
-    for k in unset {
-        let f = field(k)?;
-        let target = if f.secret {
-            &mut patch.secrets
-        } else {
-            &mut patch.values
-        };
-        target.insert(k.clone(), Value::Null);
-    }
-
-    let store = open_store(db_path).await?;
-    let mut cfg = store.load(name).await?;
-    cfg.apply_patch(&*plugin, patch)?;
-    save(&store, name, &cfg).await?;
-    println!("{} settings saved.", plugin.info().title);
-    if cfg.enabled {
-        println!("{APPLY_NOTE} Check with `aifw plugins status {name}`.");
-    }
-    Ok(())
-}
-
-pub async fn plugins_reset(db_path: &Path, name: &str) -> anyhow::Result<()> {
-    let plugin = find(name)?;
-    let store = open_store(db_path).await?;
-    store.reset(name).await?;
-    println!("{} reset to defaults and disabled.", plugin.info().title);
-    report_apply(name, false).await;
-    Ok(())
-}
-
-pub async fn plugins_status(name: Option<&str>, json: bool) -> anyhow::Result<()> {
-    let names: Vec<String> = match name {
-        Some(n) => {
-            find(n)?;
-            vec![n.to_string()]
-        }
-        None => registry::builtins().iter().map(|p| p.info().name).collect(),
-    };
-    let mut out = Vec::new();
-    for n in &names {
-        let summary = api(reqwest::Method::GET, &plugin_path(n, ""), None)
-            .await
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        let status = if summary["state"] == "running" {
-            api(reqwest::Method::GET, &plugin_path(n, "/status"), None)
-                .await
-                .unwrap_or(Value::Null)
-        } else {
-            Value::Null
-        };
-        out.push((n.clone(), summary, status));
-    }
-    if json {
-        let v: Vec<Value> = out
-            .iter()
-            .map(|(_, s, st)| json!({"plugin": s, "status": st}))
-            .collect();
-        println!("{}", serde_json::to_string_pretty(&v)?);
-        return Ok(());
-    }
-    for (i, (n, s, st)) in out.iter().enumerate() {
-        if i > 0 {
-            println!();
-        }
-        println!(
-            "{} ({n}): {}",
-            s["title"].as_str().unwrap_or(n),
-            state_line(s)
-        );
-        if let Some(at) = s["started_at"].as_str() {
-            println!("  Started: {at}");
-        }
-        let stats = &s["stats"];
-        println!(
-            "  Events: {}  actions: {}  errors: {}  timeouts: {}  panics: {}",
-            stats["events"], stats["actions"], stats["errors"], stats["timeouts"], stats["panics"]
-        );
-        if let Some(rules) = s["rules"].as_array().filter(|r| !r.is_empty()) {
-            println!("  pf rules:");
-            for r in rules {
-                println!("    {}", show_value(r));
-            }
-        }
-        if !st.is_null() {
-            println!("  Live status:");
-            print_object(st, 4);
-        }
-    }
-    Ok(())
-}
-
-pub async fn plugins_logs(name: &str, limit: usize, level: &str, json: bool) -> anyhow::Result<()> {
-    find(name)?;
-    if !matches!(level, "info" | "warn" | "error") {
-        anyhow::bail!("--level must be info, warn or error");
-    }
-    let v = api(
-        reqwest::Method::GET,
-        &plugin_path(
-            name,
-            &format!("/logs?limit={}&level={level}", limit.clamp(1, 500)),
-        ),
-        None,
-    )
-    .await
-    .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let entries = v["entries"].as_array().cloned().unwrap_or_default();
-    if json {
-        println!("{}", serde_json::to_string_pretty(&entries)?);
-        return Ok(());
-    }
-    if entries.is_empty() {
-        println!("No entries.");
-        return Ok(());
-    }
-    for e in entries.iter().rev() {
-        println!(
-            "{}  {:<5} {}",
-            e["ts"].as_str().unwrap_or("-"),
-            e["level"].as_str().unwrap_or("-"),
-            e["message"].as_str().unwrap_or("")
-        );
-    }
-    Ok(())
-}
-
-pub async fn plugins_run(
-    name: &str,
-    action: &str,
-    args: &[String],
-    json: bool,
-) -> anyhow::Result<()> {
-    let plugin = find(name)?;
-    let info = plugin
-        .actions()
-        .into_iter()
-        .find(|a| a.id == action)
-        .ok_or_else(|| {
-            let known: Vec<String> = plugin.actions().iter().map(|a| a.id.clone()).collect();
-            anyhow::anyhow!(
-                "'{name}' has no action '{action}' (available: {})",
-                known.join(", ")
-            )
-        })?;
-    let mut body = Map::new();
-    for arg in args {
-        let (k, raw) = split_kv(arg)?;
-        let f = info
-            .args
-            .iter()
-            .find(|f| f.key == k)
-            .ok_or_else(|| anyhow::anyhow!("action '{action}' has no argument '{k}'"))?;
-        body.insert(k.to_string(), parse_value(f, raw)?);
-    }
-    let v = api(
-        reqwest::Method::POST,
-        &plugin_path(name, &format!("/actions/{action}")),
-        Some(&Value::Object(body)),
-    )
-    .await
-    .map_err(|e| anyhow::anyhow!("{}: {e}", info.label))?;
-    let result = &v["result"];
-    if json {
-        println!("{}", serde_json::to_string_pretty(result)?);
-        return Ok(());
-    }
-    println!("{} finished.", info.label);
-    print_object(result, 2);
+    ctx.io.println(&format!(
+        "{} {} ({}).",
+        v["title"].as_str().unwrap_or(name),
+        if on { "enabled" } else { "disabled" },
+        state_line(&v)
+    ));
     Ok(())
 }
 
@@ -664,135 +600,47 @@ pub async fn plugins_run(
 mod tests {
     use super::*;
 
-    /// Scratch DB in its own directory, removed on drop.
-    struct Scratch(std::path::PathBuf);
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            if let Err(e) = std::fs::remove_dir_all(&self.0) {
-                eprintln!("scratch cleanup failed: {e}");
-            }
-        }
-    }
-
-    fn db() -> (Scratch, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("aifw-cli-plugins-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("aifw.db");
-        (Scratch(dir), path)
-    }
-
-    #[tokio::test]
-    async fn set_validates_and_persists() {
-        let (_dir, path) = db();
-        plugins_set(
-            &path,
-            "threat-feeds",
-            &["refresh_hours=6".into(), "feeds=feodo,dshield".into()],
-            &[],
-            None,
-            &[],
-        )
-        .await
-        .unwrap();
-        // Out of range is rejected by the shared schema check.
-        assert!(
-            plugins_set(
-                &path,
-                "threat-feeds",
-                &["refresh_hours=0".into()],
-                &[],
-                None,
-                &[]
-            )
-            .await
-            .is_err()
-        );
-        // Secrets must go through --secret.
-        assert!(
-            plugins_set(
-                &path,
-                "notifier",
-                &["ntfy_url=https://ntfy.sh/x".into()],
-                &[],
-                None,
-                &[]
-            )
-            .await
-            .is_err()
-        );
-        let store = open_store(&path).await.unwrap();
-        let cfg = store.load("threat-feeds").await.unwrap();
-        assert_eq!(cfg.values["refresh_hours"], 6);
-        assert_eq!(cfg.values["feeds"], json!(["feodo", "dshield"]));
-
-        plugins_set(
-            &path,
-            "threat-feeds",
-            &[],
-            &[],
-            None,
-            &["refresh_hours".into()],
-        )
-        .await
-        .unwrap();
-        let cfg = store.load("threat-feeds").await.unwrap();
-        assert!(!cfg.values.contains_key("refresh_hours"));
-    }
-
-    #[tokio::test]
-    async fn enable_refuses_unconfigured_notifier() {
-        let (_dir, path) = db();
-        let err = plugins_enable(&path, "notifier", true).await.unwrap_err();
-        assert!(err.to_string().contains("channel"), "{err}");
-        plugins_set(
-            &path,
-            "notifier",
-            &[],
-            &["ntfy_url=https://ntfy.sh/aifw-cli-test".into()],
-            None,
-            &[],
-        )
-        .await
-        .unwrap();
-        // No API in tests: enable writes the store and prints the hint.
-        plugins_enable(&path, "notifier", true).await.unwrap();
-        let cfg = open_store(&path)
-            .await
-            .unwrap()
-            .load("notifier")
-            .await
-            .unwrap();
-        assert!(cfg.enabled);
-        assert_eq!(cfg.secrets["ntfy_url"], "https://ntfy.sh/aifw-cli-test");
+    fn field(kind: Value) -> SettingField {
+        serde_json::from_value(json!({
+            "key": "k", "label": "K", "kind": kind, "secret": false, "default": null
+        }))
+        .unwrap()
     }
 
     #[test]
     fn values_parse_by_kind() {
-        let schema = find("notifier").unwrap().settings_schema();
-        let f = |k: &str| schema.iter().find(|f| f.key == k).unwrap();
-        assert_eq!(parse_value(f("notify_ids"), "off").unwrap(), json!(false));
-        assert_eq!(parse_value(f("dedupe_minutes"), "15").unwrap(), json!(15));
         assert_eq!(
-            parse_value(f("config_actions"), "rules_applied, daemon_stopped").unwrap(),
-            json!(["rules_applied", "daemon_stopped"])
+            parse_value(&field(json!({"type":"bool"})), "on").unwrap(),
+            json!(true)
         );
-        assert!(parse_value(f("notify_ids"), "maybe").is_err());
+        assert!(parse_value(&field(json!({"type":"bool"})), "maybe").is_err());
+        assert_eq!(
+            parse_value(&field(json!({"type":"integer","min":1,"max":9})), " 6 ").unwrap(),
+            json!(6)
+        );
+        assert!(parse_value(&field(json!({"type":"integer","min":1,"max":9})), "six").is_err());
+        assert_eq!(
+            parse_value(
+                &field(json!({"type":"list","item":"cidr","max_items":5})),
+                "10.0.0.0/8, ,192.0.2.1"
+            )
+            .unwrap(),
+            json!(["10.0.0.0/8", "192.0.2.1"])
+        );
+        assert!(split_kv("novalue").is_err());
     }
 
-    #[tokio::test]
-    async fn runtime_commands_explain_a_missing_api() {
-        // Nothing listens on the loopback API port in tests; the error must
-        // say so rather than dump a reqwest message.
-        let err = plugins_logs("notifier", 10, "info", false)
-            .await
-            .unwrap_err()
-            .to_string();
-        assert!(
-            err.contains("not reachable") || err.contains("refused"),
-            "{err}"
+    #[test]
+    fn nested_rendering() {
+        let mut out = Vec::new();
+        render_object(
+            &json!({"a": 1, "b": {"c": [1, 2]}, "d": [{"e": true}]}),
+            0,
+            &mut out,
         );
-        assert!(plugins_run("notifier", "nope", &[], false).await.is_err());
-        assert!(plugins_logs("notifier", 10, "loud", false).await.is_err());
+        assert_eq!(
+            out,
+            vec!["a: 1", "b:", "  c: 1, 2", "d:", "  -", "    e: yes"]
+        );
     }
 }

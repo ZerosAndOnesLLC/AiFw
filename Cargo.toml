@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "aifw-common",
+    "aifw-client",
     "aifw-pf",
     "aifw-core",
     "aifw-conntrack",
@@ -22,6 +23,7 @@ members = [
 # builds it. Move it back into the default set when it gets a data path.
 default-members = [
     "aifw-common",
+    "aifw-client",
     "aifw-pf",
     "aifw-core",
     "aifw-conntrack",
@@ -47,6 +49,7 @@ repository = "https://github.com/ZerosAndOnesLLC/AiFw"
 
 [workspace.dependencies]
 aifw-common = { path = "aifw-common" }
+aifw-client = { path = "aifw-client" }
 aifw-pf = { path = "aifw-pf" }
 aifw-core = { path = "aifw-core" }
 aifw-conntrack = { path = "aifw-conntrack" }

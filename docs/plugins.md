@@ -74,9 +74,10 @@ aifw plugins run threat-feeds refresh
 aifw plugins run notifier test channel=ntfy
 ```
 
-Configuration commands write the database directly and work whether or not
-the API is running; the API applies them within about ten seconds. `status`,
-`logs` and `run` ask the running API and need an API key in `AIFW_TOKEN`.
+Every `aifw plugins` command goes through the API (as root on the appliance
+with no setup; elsewhere after `aifw login`, or with an API key in
+`AIFW_TOKEN`). `key=value` settings are parsed using the schema the appliance
+reports, so the CLI always matches the firmware it talks to.
 
 Plugin configuration is part of config backups and history. Secrets are
 redacted or passphrase-encrypted on export, like every other credential.

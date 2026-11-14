@@ -1,173 +1,237 @@
-//! `aifw queue …` and `aifw ratelimit …`.
+//! `aifw queue …` — traffic-shaping queues (via the API; queue writes are
+//! applied to pf immediately by the API).
 
-use aifw_common::{
-    Bandwidth, Interface, Protocol, QueueConfig, QueueType, RateLimitRule, TrafficClass,
-};
-use aifw_core::{Database, ShapingEngine};
-use std::path::Path;
-use std::sync::Arc;
-use uuid::Uuid;
+use clap::Subcommand;
+use serde_json::{Value, json};
 
-use super::common::*;
+use crate::cli::exit::CliError;
+use crate::cli::{Ctx, col, wide};
 
-// --- Queue commands ---
-
-pub(super) async fn create_shaping_engine(db_path: &Path) -> anyhow::Result<ShapingEngine> {
-    let db = Database::new(db_path).await?;
-    let pf = Arc::from(aifw_pf::create_backend());
-    let engine = ShapingEngine::new(db.pool().clone(), pf);
-    engine.migrate().await?;
-    Ok(engine)
+#[derive(Debug, Subcommand)]
+pub enum QueueCmd {
+    /// Add a queue
+    Add {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        interface: String,
+        /// Queue type: codel, hfsc, priq
+        #[arg(long = "type", default_value = "codel", value_name = "TYPE")]
+        queue_type: String,
+        /// Bandwidth, e.g. 100Mb, 1Gb, 512Kb
+        #[arg(long)]
+        bandwidth: String,
+        /// Traffic class: voip, interactive, default, bulk
+        #[arg(long, default_value = "default")]
+        class: String,
+        /// Share of the parent bandwidth (percent)
+        #[arg(long)]
+        pct: Option<u8>,
+        /// Make this the default queue
+        #[arg(long)]
+        default: bool,
+    },
+    /// Change a queue (only the flags you pass)
+    Edit {
+        id: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        bandwidth: Option<String>,
+        #[arg(long)]
+        class: Option<String>,
+        #[arg(long)]
+        pct: Option<u8>,
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+        default: Option<bool>,
+    },
+    /// Delete a queue
+    #[command(visible_alias = "rm")]
+    Remove {
+        id: String,
+        #[arg(short, long)]
+        yes: bool,
+    },
+    /// List queues
+    #[command(visible_alias = "ls")]
+    List {
+        #[arg(long, hide = true)]
+        json: bool,
+    },
+    /// Enable a queue
+    Enable { id: String },
+    /// Disable a queue
+    Disable { id: String },
+    /// Re-apply all queues to pf
+    Apply,
+    /// Show whether shaping is configured and active
+    Status,
 }
 
-pub async fn queue_add(
-    db_path: &Path,
-    name: &str,
-    interface: &str,
-    queue_type: &str,
-    bandwidth: &str,
-    class: &str,
-    pct: Option<u8>,
-    default: bool,
+const COLS: &[crate::cli::output::Col] = &[
+    col("ID", "/id"),
+    col("NAME", "/name"),
+    col("IFACE", "/interface"),
+    col("TYPE", "/queue_type"),
+    col("BANDWIDTH", "/_bw"),
+    col("CLASS", "/traffic_class"),
+    col("PCT", "/bandwidth_pct"),
+    col("DEFAULT", "/default"),
+    col("STATUS", "/status"),
+    wide("UPDATED", "/updated_at"),
+];
+
+fn table_row(q: &Value) -> Value {
+    let mut r = q.clone();
+    r["_bw"] = json!(format!(
+        "{}{}",
+        q["bandwidth"]["value"],
+        q["bandwidth"]["unit"].as_str().unwrap_or("")
+    ));
+    r
+}
+
+/// Parse a CLI value into the wire form of an aifw-common enum/struct.
+fn wire<T: serde::Serialize>(
+    v: Result<T, aifw_common::AifwError>,
+    what: &str,
+) -> Result<Value, CliError> {
+    v.map_err(|e| CliError::Usage(format!("invalid {what}: {e}")))
+        .map(|t| serde_json::to_value(t).unwrap_or(Value::Null))
+}
+
+async fn find(client: &aifw_client::Client, id: &str) -> anyhow::Result<Value> {
+    let all = client.get("/shaper/queues").await?;
+    crate::cli::output::rows(&all)
+        .into_iter()
+        .find(|q| q["id"] == json!(id))
+        .cloned()
+        .ok_or_else(|| aifw_client::ClientError::NotFound(format!("queue {id}")).into())
+}
+
+pub async fn run(ctx: &mut Ctx, cmd: QueueCmd) -> anyhow::Result<()> {
+    let client = ctx.client()?;
+    match cmd {
+        QueueCmd::List { json } => {
+            let v = client.get("/shaper/queues").await?;
+            if json {
+                return ctx.legacy_json(&v, None);
+            }
+            ctx.list_mapped(&v, COLS, table_row)
+        }
+        QueueCmd::Add {
+            name,
+            interface,
+            queue_type,
+            bandwidth,
+            class,
+            pct,
+            default,
+        } => {
+            use aifw_common::{Bandwidth, Interface, QueueConfig, QueueType, TrafficClass};
+            let mut q = QueueConfig::new(
+                Interface(interface),
+                QueueType::parse(&queue_type)
+                    .map_err(|e| CliError::Usage(format!("invalid --type: {e}")))?,
+                Bandwidth::parse(&bandwidth)
+                    .map_err(|e| CliError::Usage(format!("invalid --bandwidth: {e}")))?,
+                name,
+                TrafficClass::parse(&class)
+                    .map_err(|e| CliError::Usage(format!("invalid --class: {e}")))?,
+            );
+            q.bandwidth_pct = pct;
+            q.default = default;
+            let v = client
+                .post("/shaper/queues", &serde_json::to_value(&q)?)
+                .await?;
+            if ctx.format().is_structured() {
+                return ctx.raw(&v);
+            }
+            ctx.io.println(&format!(
+                "Added queue {}",
+                v["data"]["id"].as_str().unwrap_or("?")
+            ));
+            let pf = q.to_pf_queue();
+            if !pf.trim().is_empty() {
+                ctx.io.println(&format!("  pf: {pf}"));
+            }
+            Ok(())
+        }
+        QueueCmd::Edit {
+            id,
+            name,
+            bandwidth,
+            class,
+            pct,
+            default,
+        } => {
+            let mut q = find(&client, &id).await?;
+            let before = q.clone();
+            if let Some(n) = name {
+                q["name"] = json!(n);
+            }
+            if let Some(b) = bandwidth {
+                q["bandwidth"] = wire(aifw_common::Bandwidth::parse(&b), "--bandwidth")?;
+            }
+            if let Some(c) = class {
+                q["traffic_class"] = wire(aifw_common::TrafficClass::parse(&c), "--class")?;
+            }
+            if let Some(p) = pct {
+                q["bandwidth_pct"] = json!(p);
+            }
+            if let Some(d) = default {
+                q["default"] = json!(d);
+            }
+            if q == before {
+                return Err(CliError::Usage("nothing to change: pass a field flag".into()).into());
+            }
+            let v = client.put(&format!("/shaper/queues/{id}"), &q).await?;
+            ctx.message(&v, &format!("Updated queue {id}"))
+        }
+        QueueCmd::Enable { id } => set_status(ctx, &client, &id, "active").await,
+        QueueCmd::Disable { id } => set_status(ctx, &client, &id, "disabled").await,
+        QueueCmd::Remove { id, yes } => {
+            ctx.confirm(&format!("Delete queue {id}?"), yes)?;
+            let v = client.delete(&format!("/shaper/queues/{id}")).await?;
+            ctx.message(&v, &format!("Removed queue {id}"))
+        }
+        QueueCmd::Apply => {
+            let v = client.post_empty("/shaper/apply").await?;
+            ctx.message(&v, "Queues applied")
+        }
+        QueueCmd::Status => {
+            let v = client.get("/shaper/status").await?;
+            ctx.detail(
+                &v,
+                &[
+                    ("Configured", "/configured"),
+                    ("Active", "/active"),
+                    ("Backend", "/backend"),
+                    ("Verified", "/verified"),
+                ],
+            )
+        }
+    }
+}
+
+async fn set_status(
+    ctx: &mut Ctx,
+    client: &aifw_client::Client,
+    id: &str,
+    status: &str,
 ) -> anyhow::Result<()> {
-    let engine = create_shaping_engine(db_path).await?;
-
-    let mut config = QueueConfig::new(
-        Interface(interface.to_string()),
-        QueueType::parse(queue_type)?,
-        Bandwidth::parse(bandwidth)?,
-        name.to_string(),
-        TrafficClass::parse(class)?,
-    );
-    config.bandwidth_pct = pct;
-    config.default = default;
-
-    let config = engine.add_queue(config).await?;
-    engine.apply_queues().await?;
-    println!("Added queue {}", config.id);
-    println!("  pf: {}", config.to_pf_queue());
-    Ok(())
-}
-
-pub async fn queue_remove(db_path: &Path, id: &str) -> anyhow::Result<()> {
-    let engine = create_shaping_engine(db_path).await?;
-    let uuid = Uuid::parse_str(id)?;
-    engine.delete_queue(uuid).await?;
-    engine.apply_queues().await?;
-    println!("Removed queue {id}");
-    Ok(())
-}
-
-pub async fn queue_list(db_path: &Path, json: bool) -> anyhow::Result<()> {
-    let engine = create_shaping_engine(db_path).await?;
-    let queues = engine.list_queues().await?;
-
-    if json {
-        println!("{}", serde_json::to_string_pretty(&queues)?);
-        return Ok(());
-    }
-
-    if queues.is_empty() {
-        println!("No queues configured");
-        return Ok(());
-    }
-
-    println!(
-        "{:<38} {:<15} {:<8} {:<8} {:<12} {:<12} DEFAULT",
-        "ID", "NAME", "IFACE", "TYPE", "BANDWIDTH", "CLASS"
-    );
-    println!("{}", "-".repeat(100));
-
-    for q in &queues {
-        println!(
-            "{:<38} {:<15} {:<8} {:<8} {:<12} {:<12} {}",
-            q.id,
-            q.name,
-            q.interface,
-            q.queue_type,
-            q.bandwidth.to_string(),
-            q.traffic_class,
-            if q.default { "yes" } else { "" },
-        );
-    }
-
-    println!("\n{} queue(s) total", queues.len());
-    Ok(())
-}
-
-// --- Rate limit commands ---
-
-pub async fn ratelimit_add(
-    db_path: &Path,
-    name: &str,
-    proto: &str,
-    max_conn: u32,
-    window: u32,
-    table: &str,
-    dst_port: Option<&str>,
-    interface: Option<&str>,
-    flush: bool,
-) -> anyhow::Result<()> {
-    let engine = create_shaping_engine(db_path).await?;
-
-    let mut rule = RateLimitRule::new(
-        name.to_string(),
-        Protocol::parse(proto)?,
-        max_conn,
-        window,
-        table.to_string(),
-    );
-    rule.dst_port = dst_port.map(parse_port).transpose()?;
-    rule.interface = interface.map(|s| Interface(s.to_string()));
-    rule.flush_states = flush;
-
-    let rule = engine.add_rate_limit(rule).await?;
-    println!("Added rate limit {}", rule.id);
-    println!("  pf: {}", rule.to_pf_rule());
-    Ok(())
-}
-
-pub async fn ratelimit_remove(db_path: &Path, id: &str) -> anyhow::Result<()> {
-    let engine = create_shaping_engine(db_path).await?;
-    let uuid = Uuid::parse_str(id)?;
-    engine.delete_rate_limit(uuid).await?;
-    println!("Removed rate limit {id}");
-    Ok(())
-}
-
-pub async fn ratelimit_list(db_path: &Path, json: bool) -> anyhow::Result<()> {
-    let engine = create_shaping_engine(db_path).await?;
-    let rules = engine.list_rate_limits().await?;
-
-    if json {
-        println!("{}", serde_json::to_string_pretty(&rules)?);
-        return Ok(());
-    }
-
-    if rules.is_empty() {
-        println!("No rate limit rules configured");
-        return Ok(());
-    }
-
-    println!(
-        "{:<38} {:<15} {:<6} {:<10} {:<8} {:<20} FLUSH",
-        "ID", "NAME", "PROTO", "MAX_CONN", "WINDOW", "TABLE"
-    );
-    println!("{}", "-".repeat(105));
-
-    for r in &rules {
-        println!(
-            "{:<38} {:<15} {:<6} {:<10} {:<8} {:<20} {}",
-            r.id,
-            r.name,
-            r.protocol,
-            r.max_connections,
-            format!("{}s", r.window_secs),
-            r.overload_table,
-            if r.flush_states { "yes" } else { "no" },
-        );
-    }
-
-    println!("\n{} rate limit(s) total", rules.len());
-    Ok(())
+    let mut q = find(client, id).await?;
+    q["status"] = json!(status);
+    let v = client.put(&format!("/shaper/queues/{id}"), &q).await?;
+    ctx.message(
+        &v,
+        &format!(
+            "Queue {id} {}",
+            if status == "active" {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        ),
+    )
 }

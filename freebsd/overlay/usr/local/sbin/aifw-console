@@ -183,13 +183,13 @@ do_update()
 
     # Check for AiFw firmware update
     echo "Checking for AiFw firmware updates..."
-    /usr/local/sbin/aifw update check
+    /usr/local/sbin/aifw --context local update check
     echo ""
     echo -n "Install AiFw firmware update if available? [y/N] "
     read confirm
     case "$confirm" in
         [yY]*)
-            /usr/local/sbin/aifw update install
+            /usr/local/sbin/aifw --context local update install
             ;;
     esac
 
@@ -199,13 +199,13 @@ do_update()
 
     # Check and install OS/package updates
     echo "Checking for OS and package updates..."
-    /usr/local/sbin/aifw update os-check
+    /usr/local/sbin/aifw --context local update os-check
     echo ""
     echo -n "Install OS and package updates? [y/N] "
     read confirm
     case "$confirm" in
         [yY]*)
-            /usr/local/sbin/aifw update os-install
+            /usr/local/sbin/aifw --context local update os-install
             ;;
     esac
 
