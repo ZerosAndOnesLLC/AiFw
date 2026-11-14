@@ -10,6 +10,11 @@ pub enum ClientError {
     /// Couldn't reach the API (connection refused, DNS, timeout).
     #[error("cannot reach the AiFw API at {url}: {reason}")]
     Unreachable { url: String, reason: String },
+    /// The request timed out; the server may still be working on it.
+    #[error(
+        "timed out waiting for {url} (the server may still finish the operation; raise --request-timeout for slow ones)"
+    )]
+    Timeout { url: String },
     /// TLS handshake failed — most often a certificate pin mismatch.
     #[error(
         "TLS error talking to {url}: {reason} (if the appliance certificate changed, re-pin with `aifw login` or `aifw context set-pin`)"
@@ -69,6 +74,11 @@ impl ClientError {
     /// Classify a transport error. TLS failures surface as connect errors
     /// whose source chain mentions the certificate.
     pub fn from_transport(url: &str, e: &reqwest::Error) -> Self {
+        if e.is_timeout() {
+            return Self::Timeout {
+                url: url.to_string(),
+            };
+        }
         // The top-level message repeats the URL ("error sending request for
         // url (…)"); the source chain carries the actual cause.
         let mut parts = Vec::new();

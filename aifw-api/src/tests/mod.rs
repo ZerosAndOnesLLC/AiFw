@@ -206,6 +206,7 @@ mod cli_nat;
 mod cli_ops;
 mod cli_review;
 mod cli_rules;
+mod cli_safety;
 mod cli_services;
 mod cli_session;
 mod cluster;

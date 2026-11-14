@@ -103,6 +103,16 @@ pub fn credential_from_token(token: &str) -> Auth {
 /// must be saved before it is used again.
 pub trait SessionStore: Send + Sync {
     fn save(&self, tokens: &TokenPair) -> std::result::Result<(), String>;
+
+    /// Serialize refreshes across processes sharing this store: returns a
+    /// guard held for the whole refresh, and the pair stored right now
+    /// (another process may already have rotated it). The default does
+    /// no locking.
+    fn lock_for_refresh(
+        &self,
+    ) -> std::result::Result<(Box<dyn std::any::Any + Send>, Option<TokenPair>), String> {
+        Ok((Box::new(()), None))
+    }
 }
 
 #[cfg(test)]

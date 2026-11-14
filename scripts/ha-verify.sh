@@ -32,7 +32,7 @@ A=$1
 B=$2
 
 run_remote() {
-    ssh -o ConnectTimeout=5 -o BatchMode=yes "$1" "aifw cluster verify --json"
+    ssh -o ConnectTimeout=5 -o BatchMode=yes "$1" "aifw --context local cluster verify --json"
 }
 
 ja=$(run_remote "$A") || {

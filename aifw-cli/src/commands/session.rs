@@ -115,6 +115,13 @@ pub async fn login(ctx: &mut Ctx, a: LoginArgs) -> anyhow::Result<()> {
         _ => name_for(&url),
     });
     validate_context_name(&name)?;
+    if name == LOCAL_TARGET && !onbox::is_loopback(&url) {
+        return Err(CliError::Usage(
+            "the context name `local` is reserved for this appliance; pick another --context"
+                .into(),
+        )
+        .into());
+    }
     let existing = cfg.contexts.get(&name).cloned();
 
     let pin = decide_pin(ctx, &url, existing.as_ref(), a.trust_cert).await?;

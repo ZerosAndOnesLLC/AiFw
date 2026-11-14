@@ -11,77 +11,169 @@ use super::exit::{self, CliError};
 use super::io::Io;
 use super::{Env, Format};
 
-/// Leaf subcommand names that never change anything.
-const READ_ONLY_LEAVES: &[&str] = &[
-    "list",
-    "ls",
-    "show",
+/// Full command paths that only read. Matched exactly (not by leaf name:
+/// `acme account --email` and `totp verify` share leaf names with read-only
+/// commands but write). Commands whose flags can turn a read into a write
+/// (`geoip database`, `dns config`, `ids retention`, `system general`, …)
+/// are deliberately absent. `compat_tests` checks every entry exists.
+pub const READ_ONLY_PATHS: &[&str] = &[
     "status",
-    "get",
-    "history",
-    "diff",
-    "check",
-    "logs",
-    "stats",
-    "lookup",
+    "about",
     "whoami",
     "pending",
-    "interfaces",
-    "instances",
-    "gateways",
-    "groups",
-    "policies",
-    "leaks",
-    "flows",
-    "fib-info",
-    "system",
-    "subnets",
-    "reservations",
-    "leases",
-    "sa",
-    "verify",
-    "peer-state",
-    "failover-history",
-    "next-ip",
-    "search",
-    "about",
-    "metrics",
     "connections",
     "blocked",
-    "info",
-    "timezones",
-    "account",
-    "routers",
-    "services",
-    "middlewares",
-    "version",
-    "export",
-    "search-rules",
-];
-
-/// Collections whose verb defaults to `list` when omitted.
-const LIST_BY_DEFAULT: &[&str] = &[
-    "entrypoints",
-    "http-routers",
-    "http-services",
-    "http-middlewares",
-    "tcp-routers",
-    "tcp-services",
-    "udp-routers",
-    "udp-services",
-    "tls-certs",
-    "tls-options",
-    "cert-resolvers",
+    "logs",
+    "audit",
+    "metrics",
+    "metrics show",
+    "metrics list",
+    "metrics series",
+    "interfaces",
+    "interfaces list",
+    "interfaces detail",
+    "interfaces stats",
+    "rules list",
+    "rules show",
+    "rules system",
+    "nat list",
+    "nat show",
+    "nat pf-output",
+    "aliases list",
+    "aliases show",
+    "schedules list",
+    "vlans list",
+    "queue list",
+    "queue status",
+    "geoip list",
+    "geoip lookup",
+    "routes list",
+    "routes system",
+    "dns list",
+    "dns status",
+    "dns logs",
+    "dns stats",
+    "dns hosts",
+    "dns hosts list",
+    "dns hosts show",
+    "dns domains",
+    "dns domains list",
+    "dns domains show",
+    "dns acls",
+    "dns acls list",
+    "dns acls show",
+    "dns whitelist",
+    "dns whitelist list",
+    "dns customblocks",
+    "dns customblocks list",
+    "dns blocklists list",
+    "dhcp status",
+    "dhcp subnets",
+    "dhcp reservations",
+    "dhcp leases",
+    "dhcp logs",
+    "time status",
+    "time logs",
+    "time sources",
+    "time sources list",
+    "time sources show",
+    "vpn list",
+    "vpn ipsec-status",
+    "vpn wg list",
+    "vpn wg status",
+    "vpn wg peers list",
+    "vpn wg peers next-ip",
+    "vpn ipsec list",
+    "vpn ipsec show",
+    "vpn ipsec status",
+    "vpn ipsec sa",
+    "ids alerts list",
+    "ids alerts show",
+    "ids stats",
+    "ids rulesets list",
+    "ids rules search",
+    "ids rules show",
+    "ids suppressions list",
+    "ai audit",
+    "plugins list",
+    "plugins show",
+    "plugins status",
+    "plugins logs",
+    "syslog show",
+    "syslog status",
+    "logrotate show",
+    "reverse-proxy status",
+    "reverse-proxy logs",
+    "reverse-proxy routers",
+    "reverse-proxy services",
+    "reverse-proxy middlewares",
+    "reverse-proxy entrypoints",
+    "reverse-proxy entrypoints list",
+    "reverse-proxy http-routers",
+    "reverse-proxy http-routers list",
+    "reverse-proxy http-services",
+    "reverse-proxy http-services list",
+    "reverse-proxy http-middlewares",
+    "reverse-proxy http-middlewares list",
+    "reverse-proxy tcp-routers",
+    "reverse-proxy tcp-services",
+    "reverse-proxy udp-routers",
+    "reverse-proxy udp-services",
+    "reverse-proxy tls-certs",
+    "reverse-proxy tls-options",
+    "reverse-proxy cert-resolvers",
+    "multiwan instances",
+    "multiwan gateways",
+    "multiwan groups",
+    "multiwan policies",
+    "multiwan leaks",
+    "multiwan flows",
+    "multiwan fib-info",
+    "multiwan export",
+    "cluster status",
+    "cluster carp list",
+    "cluster carp show",
+    "cluster pfsync get",
+    "cluster nodes list",
+    "cluster nodes show",
+    "cluster health list",
+    "cluster peer-state",
+    "cluster failover-history",
+    "cluster verify",
+    "update status",
+    "update history",
+    "config show",
+    "config history",
+    "config diff",
+    "config check",
+    "backup s3 list",
+    "settings get",
+    "settings ai-models",
+    "system info",
+    "system timezones",
+    "acme certs list",
+    "acme certs show",
+    "acme dns-providers",
+    "acme dns-providers list",
+    "acme targets list",
+    "ddns records",
+    "ddns records list",
+    "ca show",
+    "ca crl",
+    "ca certs list",
+    "ca certs show",
+    "users list",
+    "users show",
+    "roles list",
+    "roles show",
+    "roles permissions",
+    "api-keys list",
 ];
 
 /// Is the parsed command read-only? `path` is the subcommand chain, e.g.
 /// `["rules", "list"]`.
 pub fn is_read_only(path: &[String]) -> bool {
-    let Some(leaf) = path.last() else {
-        return false;
-    };
-    READ_ONLY_LEAVES.contains(&leaf.as_str())
-        || (path.len() >= 2 && LIST_BY_DEFAULT.contains(&leaf.as_str()))
+    !path.is_empty() && READ_ONLY_PATHS.contains(&path.join(" ").as_str())
 }
 
 /// Strip the fan-out flags from argv so each per-context run gets exactly
@@ -200,6 +292,18 @@ pub fn exit_code(outcomes: &[Outcome]) -> i32 {
     }
 }
 
+/// With fan-out, each context's own credential, URL and pin are used; a
+/// single ad-hoc one (e.g. an exported AIFW_TOKEN) must not be sent to
+/// every appliance.
+pub fn require_per_context_credentials(g: &super::global::GlobalArgs) -> Result<(), CliError> {
+    if g.api_key.is_some() || g.url.is_some() || g.pin.is_some() {
+        return Err(CliError::Usage(
+            "fan-out uses each context's own credentials: drop --api-key/--url/--pin and unset AIFW_TOKEN/AIFW_API_URL".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Refuse to fan out a command that changes things.
 pub fn require_read_only(path: &[String]) -> Result<(), CliError> {
     if is_read_only(path) {
@@ -226,6 +330,10 @@ mod tests {
         assert!(is_read_only(&p(&["status"])));
         assert!(is_read_only(&p(&["cluster", "verify"])));
         assert!(is_read_only(&p(&["reverse-proxy", "entrypoints"])));
+        // Leaf names shared with writes don't make a write read-only.
+        assert!(!is_read_only(&p(&["acme", "account"])));
+        assert!(!is_read_only(&p(&["totp", "verify"])));
+        assert!(!is_read_only(&p(&["reverse-proxy", "entrypoints", "add"])));
         assert!(!is_read_only(&p(&["rules", "add"])));
         assert!(!is_read_only(&p(&["apply"])));
         assert!(!is_read_only(&p(&["update", "install"])));

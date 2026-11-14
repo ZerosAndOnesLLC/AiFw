@@ -371,6 +371,10 @@ impl Client {
     /// Revoke the current session server-side (best effort for API keys:
     /// there is nothing to revoke, so this is a no-op).
     pub async fn logout(&self) -> Result<()> {
+        // Refresh first if the access token has lapsed: the logout call
+        // would otherwise rotate the refresh token mid-request and revoke
+        // the stale one, leaving the live session behind.
+        self.refresh_if_due().await?;
         let refresh = match &*self.auth.lock().await {
             Auth::Session(s) => Some(s.refresh_token.clone()),
             Auth::Bearer(_) => None,
@@ -488,6 +492,28 @@ impl Client {
         let Auth::Session(s) = &*guard else {
             return Ok(());
         };
+        // Cross-process: hold the store's lock for the whole rotation, and
+        // if another process already rotated, adopt its pair instead of
+        // presenting our (now reused → family-revoking) refresh token.
+        // The lock may block while another process refreshes; wait on a
+        // blocking thread so concurrent refreshes in this process (fan-out)
+        // never stall the async runtime.
+        let (_lock, stored) = match &self.store {
+            Some(store) => {
+                let store = store.clone();
+                tokio::task::spawn_blocking(move || store.lock_for_refresh())
+                    .await
+                    .map_err(|e| ClientError::Local(format!("session lock task: {e}")))?
+                    .map_err(|e| ClientError::Local(format!("locking the session store: {e}")))?
+            }
+            None => (Box::new(()) as Box<dyn std::any::Any + Send>, None),
+        };
+        if let Some(p) = stored
+            && p.refresh_token != s.refresh_token
+        {
+            *guard = Auth::Session(Session::from_tokens(&p));
+            return Ok(());
+        }
         let url = self.url("/auth/refresh");
         let resp = self
             .http
@@ -504,12 +530,14 @@ impl Client {
         let resp = check(resp, "POST /auth/refresh").await?;
         let pair: TokenPair = serde_json::from_value(decode_json(resp).await?)
             .map_err(|e| ClientError::Decode(format!("refresh tokens: {e}")))?;
-        if let Some(store) = &self.store {
-            store
-                .save(&pair)
-                .map_err(|e| ClientError::Local(format!("saving refreshed session: {e}")))?;
-        }
+        // The server has rotated: from here the old pair is dead. Keep the
+        // new one even if saving it fails, so this process keeps working.
         *guard = Auth::Session(Session::from_tokens(&pair));
+        if let Some(store) = &self.store
+            && let Err(e) = store.save(&pair)
+        {
+            tracing::warn!(error = %e, "could not save the refreshed session; it lasts only for this command");
+        }
         Ok(())
     }
 }

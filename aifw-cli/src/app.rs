@@ -389,7 +389,29 @@ where
         return fan_out(&args, cli.global.clone(), io, env).await;
     }
     let mut ctx = Ctx::new(cli.global.clone(), io, env);
-    match dispatch(cli, &mut ctx).await {
+    let mut result = dispatch(cli, &mut ctx).await;
+    // Root's on-box key can go stale (DB re-initialised, key row removed):
+    // mint a fresh one and try once more, so the cron and console menu
+    // don't need a human. A 401 comes from the first call, before any
+    // change was made.
+    if let Err(e) = &result
+        && exit::code_for(e) == exit::UNAUTHENTICATED
+        && ctx.used_onbox_cli_key
+        && crate::cli::onbox::is_root()
+    {
+        match crate::commands::local::provision_cli_key(&ctx.onbox) {
+            Ok(_) => {
+                ctx.io.eprintln(
+                    "note: the on-box CLI key was rejected; minted a new one and retrying",
+                );
+                if let Ok(again) = Cli::try_parse_from(&args) {
+                    result = dispatch(again, &mut ctx).await;
+                }
+            }
+            Err(err) => tracing::warn!(error = %err, "could not re-mint the on-box CLI key"),
+        }
+    }
+    match result {
         Ok(()) => exit::OK,
         Err(e) => {
             let code = exit::code_for(&e);
@@ -434,6 +456,9 @@ async fn fan_out(
     };
     let path = command_path(args);
     if let Err(e) = crate::cli::fanout::require_read_only(&path) {
+        return fail(&mut io, e.into());
+    }
+    if let Err(e) = crate::cli::fanout::require_per_context_credentials(&g) {
         return fail(&mut io, e.into());
     }
     let store = crate::cli::config::Store::new(&env.config_dir);
@@ -745,6 +770,34 @@ mod compat_tests {
             0
         );
         assert!(out.contents().contains(".TH"));
+    }
+
+    /// Every fan-out read-only path is a real command (no stale entries).
+    #[test]
+    fn read_only_paths_exist() {
+        use clap::CommandFactory;
+        let root = Cli::command();
+        for path in crate::cli::fanout::READ_ONLY_PATHS {
+            let mut cmd = &root;
+            for part in path.split(' ') {
+                cmd = cmd
+                    .find_subcommand(part)
+                    .unwrap_or_else(|| panic!("fan-out read-only path `{path}` is not a command"));
+            }
+        }
+    }
+
+    #[test]
+    fn on_box_callers_parse_with_local_context() {
+        for args in [
+            &["--context", "local", "update", "check"][..],
+            &["--context", "local", "--no-input", "update", "os-check"],
+            &["--context", "local", "cluster", "verify", "--json"],
+        ] {
+            let mut argv = vec!["aifw"];
+            argv.extend_from_slice(args);
+            Cli::try_parse_from(&argv).unwrap();
+        }
     }
 
     #[test]

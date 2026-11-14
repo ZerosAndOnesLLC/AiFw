@@ -304,7 +304,14 @@ pub async fn run(ctx: &mut Ctx, cmd: IdsCmd) -> anyhow::Result<()> {
             ctx.raw(crate::cli::output::item(&v))
         }
         IdsCmd::Reload => {
-            let v = client.post_empty("/ids/reload").await?;
+            let v = client
+                .request_with_timeout(
+                    reqwest::Method::POST,
+                    "/ids/reload",
+                    None,
+                    ctx.slow_timeout(std::time::Duration::from_secs(180)),
+                )
+                .await?;
             ctx.message(&v, "IDS rules reloaded")
         }
         IdsCmd::Rulesets(r) => match r {
@@ -343,13 +350,23 @@ pub async fn run(ctx: &mut Ctx, cmd: IdsCmd) -> anyhow::Result<()> {
             }
             RulesetsCmd::Enable { id } => {
                 let v = client
-                    .put(&format!("/ids/rulesets/{id}"), &json!({ "enabled": true }))
+                    .request_with_timeout(
+                        reqwest::Method::PUT,
+                        &format!("/ids/rulesets/{id}"),
+                        Some(&json!({ "enabled": true })),
+                        ctx.slow_timeout(std::time::Duration::from_secs(180)),
+                    )
                     .await?;
                 ctx.message(&v, &format!("Ruleset {id} enabled"))
             }
             RulesetsCmd::Disable { id } => {
                 let v = client
-                    .put(&format!("/ids/rulesets/{id}"), &json!({ "enabled": false }))
+                    .request_with_timeout(
+                        reqwest::Method::PUT,
+                        &format!("/ids/rulesets/{id}"),
+                        Some(&json!({ "enabled": false })),
+                        ctx.slow_timeout(std::time::Duration::from_secs(180)),
+                    )
                     .await?;
                 ctx.message(&v, &format!("Ruleset {id} disabled"))
             }

@@ -483,10 +483,13 @@ pub async fn run(ctx: &mut Ctx, cmd: PluginsCmd) -> anyhow::Result<()> {
                 body.insert(k.to_string(), parse_value(f, raw)?);
             }
             let label = info["label"].as_str().unwrap_or(&action).to_string();
+            // Actions may run up to the server's 120 s limit.
             let v = client
-                .post(
+                .request_with_timeout(
+                    reqwest::Method::POST,
                     &format!("/plugins/{name}/actions/{action}"),
-                    &Value::Object(body),
+                    Some(&Value::Object(body)),
+                    ctx.slow_timeout(std::time::Duration::from_secs(150)),
                 )
                 .await?;
             if ctx.format().is_structured() {

@@ -98,6 +98,7 @@ pub async fn run(ctx: &mut Ctx, cmd: ContextCmd) -> anyhow::Result<()> {
             fingerprint,
             default_output,
         } => {
+            reserve_local(&name, &url)?;
             validate_context_name(&name)?;
             let mut cfg = ctx.store.load_config()?;
             if cfg.contexts.contains_key(&name) {
@@ -137,6 +138,16 @@ pub async fn run(ctx: &mut Ctx, cmd: ContextCmd) -> anyhow::Result<()> {
         }
         ContextCmd::Rename { old, new } => {
             validate_context_name(&new)?;
+            if new == crate::cli::connect::LOCAL_TARGET {
+                let url = ctx
+                    .store
+                    .load_config()?
+                    .contexts
+                    .get(&old)
+                    .map(|e| e.url.clone())
+                    .unwrap_or_default();
+                reserve_local(&new, &url)?;
+            }
             let mut cfg = ctx.store.load_config()?;
             if cfg.contexts.contains_key(&new) {
                 return Err(CliError::Usage(format!("context '{new}' already exists")).into());
@@ -273,4 +284,16 @@ fn list(ctx: &mut Ctx) -> anyhow::Result<()> {
             wide("OUTPUT", "/output"),
         ],
     )
+}
+
+/// `local` always means this appliance (on-box automation relies on it),
+/// so it may only ever point at the loopback API.
+fn reserve_local(name: &str, url: &str) -> Result<(), CliError> {
+    if name == crate::cli::connect::LOCAL_TARGET && !crate::cli::onbox::is_loopback(url) {
+        return Err(CliError::Usage(
+            "the context name `local` is reserved for this appliance (https://127.0.0.1:8080)"
+                .into(),
+        ));
+    }
+    Ok(())
 }

@@ -132,6 +132,34 @@ pub fn resolve(
 
     let cfg = store.load_config()?;
     let name = context.map(str::to_string).or_else(|| cfg.current.clone());
+    // `local` is reserved: always this appliance, whatever is saved. A
+    // saved `local` context (from `aifw login` on the box) is used only
+    // for its credential, and only if it really is the loopback API.
+    // On-box automation (cron, console menu, ha-verify.sh) passes
+    // `--context local` so root's saved "current" context can't redirect it.
+    let name = name.filter(|n| {
+        n != LOCAL_TARGET
+            || cfg
+                .contexts
+                .get(n)
+                .is_some_and(|e| onbox::is_loopback(&e.url))
+    });
+    if context == Some(LOCAL_TARGET) && name.is_none() {
+        let (auth, source) = match flag_auth {
+            Some(a) => (a, "--api-key/AIFW_TOKEN".to_string()),
+            None => onbox_auth(onbox),
+        };
+        let url = aifw_client::DEFAULT_LOCAL_URL.to_string();
+        return Ok(Target {
+            name: LOCAL_TARGET.into(),
+            trust: trust_for(&url, g.pin.as_deref(), onbox),
+            url,
+            auth,
+            session_context: None,
+            auth_source: source,
+            output: None,
+        });
+    }
     if let Some(name) = name {
         let entry = cfg.contexts.get(&name).ok_or_else(|| {
             CliError::Usage(format!(
@@ -192,6 +220,39 @@ struct ContextSessionStore {
 }
 
 impl SessionStore for ContextSessionStore {
+    /// An exclusive flock on `credentials.lock` next to the credentials
+    /// file, plus the pair stored for this context right now.
+    fn lock_for_refresh(
+        &self,
+    ) -> Result<(Box<dyn std::any::Any + Send>, Option<TokenPair>), String> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let dir = self.store.dir();
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .mode(0o600)
+            .open(dir.join("credentials.lock"))
+            .map_err(|e| e.to_string())?;
+        let lock = nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusive)
+            .map_err(|(_, e)| format!("flock: {e}"))?;
+        let stored = self
+            .store
+            .credential(&self.context)
+            .map_err(|e| e.to_string())?
+            .and_then(|c| match (c.access_token, c.refresh_token) {
+                (Some(a), Some(r)) => Some(TokenPair {
+                    access_token: a,
+                    refresh_token: r,
+                    access_expires_at: c.access_expires_at,
+                    refresh_expires_at: None,
+                }),
+                _ => None,
+            });
+        Ok((Box::new(lock), stored))
+    }
+
     fn save(&self, t: &TokenPair) -> Result<(), String> {
         let mut c = self
             .store
@@ -352,6 +413,39 @@ mod tests {
         let t = resolve(&g, &store, &onbox, Some("a")).unwrap();
         assert_eq!(t.auth, Auth::ApiKey("aifw_override".into()));
         assert_eq!(t.session_context, None);
+    }
+
+    /// `--context local` always means this appliance, even when root's
+    /// saved current context points elsewhere (the cron relies on this).
+    #[test]
+    fn local_is_reserved_for_this_box() {
+        let (store, onbox) = setup("local");
+        let mut cfg = Config::default();
+        cfg.contexts.insert(
+            "fw2".into(),
+            ContextEntry {
+                url: "https://10.0.0.2:8080".into(),
+                pin: None,
+                output: None,
+            },
+        );
+        // A hand-edited `local` that isn't loopback is ignored.
+        cfg.contexts.insert(
+            "local".into(),
+            ContextEntry {
+                url: "https://10.6.6.6:8080".into(),
+                pin: None,
+                output: None,
+            },
+        );
+        cfg.current = Some("fw2".into());
+        store.save_config(&cfg).unwrap();
+        let t = resolve(&GlobalArgs::default(), &store, &onbox, Some("local")).unwrap();
+        assert_eq!(t.url, aifw_client::DEFAULT_LOCAL_URL);
+        assert_eq!(t.name, LOCAL_TARGET);
+        // Without --context, the saved current one still wins.
+        let t = resolve(&GlobalArgs::default(), &store, &onbox, None).unwrap();
+        assert_eq!(t.name, "fw2");
     }
 
     #[test]

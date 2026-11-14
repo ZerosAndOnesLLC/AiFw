@@ -419,3 +419,91 @@ async fn pinned_https_rejects_wrong_certificate() {
     let bad = Client::builder(&base).pin("00".repeat(32)).build().unwrap();
     assert!(matches!(bad.get("/x").await, Err(ClientError::Tls { .. })));
 }
+
+#[tokio::test]
+async fn timeouts_are_not_reported_as_unreachable() {
+    let app = Router::new().route(
+        "/api/v1/slow",
+        get(|| async {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            "late"
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let c = Client::builder(format!("http://{addr}"))
+        .timeout(Duration::from_millis(200))
+        .build()
+        .unwrap();
+    assert!(matches!(
+        c.get("/slow").await,
+        Err(ClientError::Timeout { .. })
+    ));
+}
+
+/// A store that can't persist (disk full, read-only home) must not cost
+/// the session: the server already rotated, so the new pair is kept.
+#[tokio::test]
+async fn refresh_survives_a_failing_store() {
+    struct Broken;
+    impl SessionStore for Broken {
+        fn save(&self, _: &TokenPair) -> std::result::Result<(), String> {
+            Err("disk full".into())
+        }
+    }
+    let (base, m) = start().await;
+    let session = Session {
+        access_token: "stale".into(),
+        refresh_token: "refresh-0".into(),
+        access_expires_at: None,
+    };
+    let c = Client::builder(&base)
+        .auth(Auth::Session(session))
+        .session_store(Arc::new(Broken))
+        .build()
+        .unwrap();
+    c.get("/me").await.unwrap();
+    c.get("/me").await.unwrap();
+    assert_eq!(
+        *m.refreshes.lock().unwrap(),
+        1,
+        "kept the rotated pair in memory"
+    );
+}
+
+/// Another process already rotated the pair: adopt it, don't present the
+/// old refresh token (reuse revokes the whole family).
+#[tokio::test]
+async fn refresh_adopts_a_pair_rotated_elsewhere() {
+    struct Rotated(TokenPair);
+    impl SessionStore for Rotated {
+        fn save(&self, _: &TokenPair) -> std::result::Result<(), String> {
+            Ok(())
+        }
+        fn lock_for_refresh(
+            &self,
+        ) -> std::result::Result<(Box<dyn std::any::Any + Send>, Option<TokenPair>), String>
+        {
+            Ok((Box::new(()), Some(self.0.clone())))
+        }
+    }
+    let (base, m) = start().await;
+    *m.valid_access.lock().unwrap() = "fresh".into();
+    let c = Client::builder(&base)
+        .auth(Auth::Session(Session {
+            access_token: "stale".into(),
+            refresh_token: "old".into(),
+            access_expires_at: None,
+        }))
+        .session_store(Arc::new(Rotated(TokenPair {
+            access_token: "fresh".into(),
+            refresh_token: "new".into(),
+            access_expires_at: None,
+            refresh_expires_at: None,
+        })))
+        .build()
+        .unwrap();
+    c.get("/me").await.unwrap();
+    assert_eq!(*m.refreshes.lock().unwrap(), 0, "no network refresh");
+}

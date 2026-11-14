@@ -37,12 +37,15 @@ pub struct Ctx {
     pub onbox: OnBox,
     /// Output format after applying the context default.
     format: Option<Format>,
+    /// The last target authenticated with root's on-box CLI key.
+    pub used_onbox_cli_key: bool,
 }
 
 impl Ctx {
     pub fn new(g: GlobalArgs, io: Io, env: Env) -> Self {
         Self {
             format: g.output,
+            used_onbox_cli_key: false,
             store: Store::new(env.config_dir),
             onbox: env.onbox,
             g,
@@ -77,6 +80,7 @@ impl Ctx {
         if self.format.is_none() {
             self.format = t.output.as_deref().and_then(Format::parse);
         }
+        self.used_onbox_cli_key = t.auth_source == self.onbox.cli_key.display().to_string();
         Ok(t)
     }
 
