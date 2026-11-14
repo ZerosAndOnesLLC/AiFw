@@ -267,6 +267,8 @@ pub async fn acme(ctx: &mut Ctx, cmd: AcmeCmd) -> anyhow::Result<()> {
             let r = Resource {
                 path: "/acme/dns-providers".into(),
                 what: "DNS provider",
+                update: true,
+                toggle: false,
                 cols: vec![
                     col("ID", "/id"),
                     col("NAME", "/name"),
@@ -343,6 +345,8 @@ pub async fn ddns(ctx: &mut Ctx, cmd: DdnsCmd) -> anyhow::Result<()> {
             let r = Resource {
                 path: "/ddns/records".into(),
                 what: "DDNS record",
+                update: true,
+                toggle: true,
                 cols: vec![
                     col("ID", "/id"),
                     col("HOSTNAME", "/hostname"),

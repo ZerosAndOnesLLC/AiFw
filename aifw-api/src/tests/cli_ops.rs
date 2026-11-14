@@ -264,7 +264,8 @@ async fn dhcp_subnets_reservations_and_soft_failures() {
     .await
     .ok();
     let subs = cli.run(&["dhcp", "subnets", "--json"]).await.json();
-    let sid = subs["data"][0]["id"].as_str().unwrap().to_string();
+    assert!(subs[0].get("dns_servers").is_none(), "legacy 6-key shape");
+    let sid = subs[0]["id"].as_str().unwrap().to_string();
     cli.run(&["dhcp", "subnet-edit", &sid, "--lease-time", "7200"])
         .await
         .ok();
@@ -293,10 +294,9 @@ async fn dhcp_subnets_reservations_and_soft_failures() {
             .out
             .contains("printer")
     );
-    let rid = cli.run(&["dhcp", "reservations", "--json"]).await.json()["data"][0]["id"]
-        .to_string()
-        .trim_matches('"')
-        .to_string();
+    let legacy = cli.run(&["dhcp", "reservations", "--json"]).await.json();
+    assert_eq!(legacy[0]["mac"], "aa:bb:cc:dd:ee:ff", "legacy keys");
+    let rid = legacy[0]["id"].to_string().trim_matches('"').to_string();
     cli.run(&["dhcp", "reservation-remove", &rid, "--yes"])
         .await
         .ok();

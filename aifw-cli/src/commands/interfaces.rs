@@ -129,6 +129,13 @@ pub async fn run(ctx: &mut Ctx, cmd: Option<IfaceCmd>) -> anyhow::Result<()> {
             description,
             yes,
         } => {
+            // The API only applies an address in static mode (and answers
+            // "configured" either way), so say so instead of a silent no-op.
+            if ipv4_address.is_some() && ipv4_mode.as_deref().is_none_or(|m| m != "static") {
+                return Err(
+                    CliError::Usage("--ipv4-address needs --ipv4-mode static".into()).into(),
+                );
+            }
             let body = Fields::new()
                 .opt("ipv4_mode", ipv4_mode)
                 .opt("ipv4_address", ipv4_address)

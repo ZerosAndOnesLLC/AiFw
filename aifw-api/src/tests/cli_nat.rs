@@ -37,7 +37,7 @@ async fn dnat_add_list_edit_remove() {
     );
 
     let j = cli.run(&["nat", "list", "--json"]).await.json();
-    let id = j["data"][0]["id"].as_str().unwrap().to_string();
+    let id = j[0]["id"].as_str().unwrap().to_string();
     let l = cli.run(&["nat", "ls"]).await;
     assert!(
         l.out.contains("10.0.0.5:8080") && l.out.contains("dnat") && l.out.contains("any:80"),

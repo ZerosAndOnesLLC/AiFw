@@ -4,7 +4,7 @@ use clap::Subcommand;
 use serde_json::{Value, json};
 
 use crate::cli::body::{self, Fields};
-use crate::cli::{Ctx, Format, col, wide};
+use crate::cli::{Ctx, col, wide};
 
 #[derive(Debug, Subcommand)]
 pub enum RoutesCmd {
@@ -107,10 +107,10 @@ pub async fn run(ctx: &mut Ctx, cmd: RoutesCmd) -> anyhow::Result<()> {
     let client = ctx.client()?;
     match cmd {
         RoutesCmd::List { json } => {
-            if json {
-                ctx.force_format(Format::Json);
-            }
             let v = client.get("/routes").await?;
+            if json {
+                return ctx.legacy_json(&v, Some(&legacy_route));
+            }
             ctx.list(&v, COLS)
         }
         RoutesCmd::Add {
@@ -201,4 +201,13 @@ async fn set_enabled(
         &v,
         &format!("Route {id} {}", if on { "enabled" } else { "disabled" }),
     )
+}
+
+/// Row shape the pre-API `routes list --json` printed.
+fn legacy_route(r: &Value) -> Value {
+    json!({
+        "id": r["id"], "destination": r["destination"], "gateway": r["gateway"],
+        "interface": r["interface"], "metric": r["metric"], "enabled": r["enabled"],
+        "description": r["description"],
+    })
 }

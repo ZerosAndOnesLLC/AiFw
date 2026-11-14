@@ -206,6 +206,9 @@ pub enum PeerCmd {
     Config {
         tunnel: String,
         peer: String,
+        /// Split tunnel: route only the tunnel networks (default: all traffic)
+        #[arg(long)]
+        split: bool,
         /// Write to a file (mode 0600) instead of stdout
         #[arg(short = 'O', long = "output-file")]
         output_file: Option<std::path::PathBuf>,
@@ -479,7 +482,10 @@ pub async fn run(ctx: &mut Ctx, cmd: VpnCmd) -> anyhow::Result<()> {
         VpnCmd::IpsecStop { id } => ipsec(ctx, IpsecCmd::Stop { id }).await,
         VpnCmd::IpsecStatus { json } => {
             if json {
-                ctx.force_format(Format::Json);
+                // Pre-API output was the bare status array.
+                let client = ctx.client()?;
+                let v = client.get("/vpn/ipsec/status").await?;
+                return ctx.legacy_json(&v, None);
             }
             ipsec(ctx, IpsecCmd::Status { id: None }).await
         }
@@ -721,18 +727,19 @@ async fn peers(ctx: &mut Ctx, client: &aifw_client::Client, cmd: PeerCmd) -> any
         PeerCmd::Config {
             tunnel,
             peer,
+            split,
             output_file,
         } => {
             let bytes = client
                 .get_bytes(&format!("/vpn/wg/{tunnel}/peers/{peer}/config"))
                 .await?;
-            // Some deployments wrap the config in JSON.
+            // The API returns both variants: {full_tunnel, split_tunnel}.
+            let key = if split { "split_tunnel" } else { "full_tunnel" };
             let text = match serde_json::from_slice::<Value>(&bytes) {
-                Ok(v) => v["config"]
+                Ok(v) => crate::cli::output::item(&v)[key]
                     .as_str()
-                    .or(v["data"].as_str())
                     .map(str::to_string)
-                    .unwrap_or_else(|| String::from_utf8_lossy(&bytes).into_owned()),
+                    .ok_or_else(|| anyhow::anyhow!("unexpected peer config response (no {key})"))?,
                 Err(_) => String::from_utf8_lossy(&bytes).into_owned(),
             };
             match output_file {

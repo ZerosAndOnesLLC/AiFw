@@ -23,8 +23,12 @@ pub enum MultiwanCmd {
     Flows,
     /// Available FIBs and which are in use
     FibInfo,
-    /// Preview the pf anchors an apply would load
-    Preview,
+    /// What a set of policy rules would change (blast radius), before
+    /// applying it: -f takes the proposed policies (JSON/YAML list, API shape)
+    Preview {
+        #[arg(short = 'f', long = "file")]
+        file: String,
+    },
     /// Recompile and apply all multi-WAN pf anchors
     Apply,
     /// Seed management-escape leaks for non-default instances (then apply)
@@ -145,7 +149,24 @@ pub async fn run(ctx: &mut Ctx, cmd: MultiwanCmd) -> anyhow::Result<()> {
             ));
             Ok(())
         }
-        MultiwanCmd::Preview => ctx.raw(&client.post("/multiwan/preview", &json!({})).await?),
+        MultiwanCmd::Preview { file } => {
+            let proposed = crate::cli::body::read(&mut ctx.io, &file)?;
+            // Accept a bare list, `{policies: [...]}`, or an export.
+            let policies = match proposed {
+                Value::Array(_) => proposed,
+                other => crate::cli::output::item(&other)["policies"].clone(),
+            };
+            if !policies.is_array() {
+                return Err(
+                    CliError::Usage(format!("{file}: expected a list of policy rules")).into(),
+                );
+            }
+            ctx.raw(
+                &client
+                    .post("/multiwan/preview", &json!({ "policies": policies }))
+                    .await?,
+            )
+        }
         MultiwanCmd::Apply => {
             let v = client.post_empty("/multiwan/apply").await?;
             ctx.message(&v, "Multi-WAN anchors applied")

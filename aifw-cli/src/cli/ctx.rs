@@ -113,6 +113,23 @@ impl Ctx {
         Ok(())
     }
 
+    /// The old per-command `--json` output: a bare array of the list's
+    /// rows (no `{"data": …}` envelope), optionally reshaped to the keys
+    /// the pre-API CLI printed. Scripts doing `jq '.[0]'` keep working.
+    pub fn legacy_json(
+        &mut self,
+        v: &Value,
+        map: Option<&dyn Fn(&Value) -> Value>,
+    ) -> anyhow::Result<()> {
+        let rows: Vec<Value> = output::rows(v)
+            .into_iter()
+            .map(|r| map.map_or_else(|| r.clone(), |f| f(r)))
+            .collect();
+        let s = output::structured(&Value::Array(rows), Format::Json)?;
+        self.io.println(&s);
+        Ok(())
+    }
+
     /// Like [`Self::list`] but each row is reshaped by `f` for the table
     /// (computed columns); json/yaml still get the API's response as-is.
     pub fn list_mapped(
@@ -194,10 +211,13 @@ impl Ctx {
 /// Service endpoints that answer 200 even when the action failed phrase it
 /// as "Failed to …", "<thing> failed: …" or "Configuration invalid: …".
 pub fn message_reports_failure(msg: &str) -> bool {
-    msg.starts_with("Failed")
-        || msg.contains(" failed:")
-        || msg.starts_with("Configuration invalid")
-        || msg.starts_with("Partial reload")
+    let lower = msg.to_ascii_lowercase();
+    lower.starts_with("failed")
+        || lower.contains(" failed")
+        || lower.starts_with("configuration invalid")
+        || lower.starts_with("partial reload")
+        || lower.starts_with("unknown backend")
+        || lower.contains("unavailable")
 }
 
 #[cfg(test)]
@@ -211,5 +231,10 @@ mod tests {
         assert!(message_reports_failure("Configuration invalid: line 3"));
         assert!(!message_reports_failure("DHCP started"));
         assert!(!message_reports_failure("Configuration valid"));
+        assert!(message_reports_failure("config generation failed (2)"));
+        assert!(message_reports_failure("database unavailable"));
+        assert!(message_reports_failure("Failed to release 10.0.0.9: x"));
+        assert!(message_reports_failure("pkg upgrade failed: no network"));
+        assert!(!message_reports_failure("Lease 10.0.0.9 released"));
     }
 }

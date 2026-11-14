@@ -88,7 +88,7 @@ pub enum AlertsCmd {
     Show { id: String },
     /// Acknowledge an alert
     Ack { id: String },
-    /// Classify an alert (e.g. false_positive, true_positive)
+    /// Classify an alert: unreviewed, confirmed, false_positive, investigating
     Classify { id: String, classification: String },
 }
 
@@ -102,7 +102,7 @@ pub enum RulesetsCmd {
         name: String,
         #[arg(long)]
         url: Option<String>,
-        /// suricata, snort, sigma, yara
+        /// suricata, sigma, yara
         #[arg(long, default_value = "suricata")]
         format: String,
         #[arg(long)]

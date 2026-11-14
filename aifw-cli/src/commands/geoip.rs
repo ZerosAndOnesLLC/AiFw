@@ -169,10 +169,10 @@ pub async fn run(ctx: &mut Ctx, cmd: GeoipCmd) -> anyhow::Result<()> {
     let client = ctx.client()?;
     match cmd {
         GeoipCmd::List { json } => {
-            if json {
-                ctx.force_format(Format::Json);
-            }
             let v = client.get("/geoip").await?;
+            if json {
+                return ctx.legacy_json(&v, None);
+            }
             ctx.list(&v, COLS)?;
             if !ctx.format().is_structured()
                 && let Ok(st) = client.get("/geoip/database").await

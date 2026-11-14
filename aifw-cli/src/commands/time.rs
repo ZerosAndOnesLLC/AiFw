@@ -66,6 +66,8 @@ pub async fn run(ctx: &mut Ctx, cmd: TimeCmd) -> anyhow::Result<()> {
             let r = Resource {
                 path: "/time/sources".into(),
                 what: "time source",
+                update: true,
+                toggle: true,
                 cols: vec![
                     col("ID", "/id"),
                     col("ADDRESS", "/address"),

@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 
 use crate::cli::body::{self, Fields};
 use crate::cli::exit::CliError;
-use crate::cli::{Ctx, Format, col, wide};
+use crate::cli::{Ctx, col, wide};
 
 #[derive(Debug, Subcommand)]
 pub enum NatCmd {
@@ -302,10 +302,10 @@ pub async fn run(ctx: &mut Ctx, cmd: NatCmd) -> anyhow::Result<()> {
     match cmd {
         NatCmd::Embed { .. } => Ok(()),
         NatCmd::List { json } => {
-            if json {
-                ctx.force_format(Format::Json);
-            }
             let v = client.get("/nat").await?;
+            if json {
+                return ctx.legacy_json(&v, None);
+            }
             ctx.list_mapped(&v, COLS, table_row)
         }
         NatCmd::Show { id } => {

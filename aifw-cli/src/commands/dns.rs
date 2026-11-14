@@ -247,6 +247,8 @@ pub async fn run(ctx: &mut Ctx, cmd: DnsCmd) -> anyhow::Result<()> {
             let r = Resource {
                 path: "/dns/resolver/hosts".into(),
                 what: "host override",
+                update: true,
+                toggle: true,
                 cols: vec![
                     col("ID", "/id"),
                     col("HOST", "/hostname"),
@@ -274,6 +276,8 @@ pub async fn run(ctx: &mut Ctx, cmd: DnsCmd) -> anyhow::Result<()> {
             let r = Resource {
                 path: "/dns/resolver/domains".into(),
                 what: "domain override",
+                update: true,
+                toggle: true,
                 cols: vec![
                     col("ID", "/id"),
                     col("DOMAIN", "/domain"),
@@ -288,6 +292,8 @@ pub async fn run(ctx: &mut Ctx, cmd: DnsCmd) -> anyhow::Result<()> {
             let r = Resource {
                 path: "/dns/resolver/acls".into(),
                 what: "ACL entry",
+                update: false,
+                toggle: false,
                 cols: vec![
                     col("ID", "/id"),
                     col("NETWORK", "/network"),
@@ -311,6 +317,8 @@ pub async fn run(ctx: &mut Ctx, cmd: DnsCmd) -> anyhow::Result<()> {
             let r = Resource {
                 path: "/dns/whitelist".into(),
                 what: "whitelist entry",
+                update: false,
+                toggle: false,
                 cols: vec![
                     col("ID", "/id"),
                     col("PATTERN", "/pattern"),
@@ -323,6 +331,8 @@ pub async fn run(ctx: &mut Ctx, cmd: DnsCmd) -> anyhow::Result<()> {
             let r = Resource {
                 path: "/dns/customblocks".into(),
                 what: "custom block",
+                update: false,
+                toggle: false,
                 cols: vec![
                     col("ID", "/id"),
                     col("PATTERN", "/pattern"),

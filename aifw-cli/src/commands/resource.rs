@@ -5,6 +5,7 @@
 use clap::{Args, Subcommand};
 use serde_json::{Value, json};
 
+use crate::cli::exit::CliError;
 use crate::cli::output::Col;
 use crate::cli::{Ctx, Format};
 
@@ -14,6 +15,10 @@ pub struct Resource {
     pub path: String,
     /// Human name ("host override").
     pub what: &'static str,
+    /// The API has `PUT {path}/{id}` (otherwise: delete and re-add).
+    pub update: bool,
+    /// Objects carry an `enabled` flag that PUT honours.
+    pub toggle: bool,
     pub cols: Vec<Col>,
 }
 
@@ -131,6 +136,14 @@ pub async fn crud(
                 None => ctx.message(&v, &format!("Created {}", r.what))?,
             }
             Ok(())
+        }
+        Crud::Edit { .. } if !r.update => Err(CliError::Usage(format!(
+            "a {} can't be edited — remove it and add it again",
+            r.what
+        ))
+        .into()),
+        Crud::Enable { .. } | Crud::Disable { .. } if !r.toggle => {
+            Err(CliError::Usage(format!("a {} has no enabled flag to toggle", r.what)).into())
         }
         Crud::Edit { id, file } => {
             let cur = find(client, r, &id).await?;

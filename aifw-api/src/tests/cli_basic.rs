@@ -27,8 +27,9 @@ async fn queues() {
     r.ok();
     assert!(r.out.starts_with("Added queue "), "{}", r.out);
     assert!(!r.out.contains("pf: \n"), "no empty pf line");
+    // Legacy --json: a bare array, as before the API port.
     let j = cli.run(&["queue", "list", "--json"]).await.json();
-    let id = j["data"][0]["id"].as_str().unwrap().to_string();
+    let id = j[0]["id"].as_str().unwrap().to_string();
     let l = cli.run(&["queue", "ls"]).await;
     assert!(l.out.contains("voip") && l.out.contains("100"), "{}", l.out);
 
@@ -77,7 +78,8 @@ async fn static_routes() {
     .await
     .ok();
     let j = cli.run(&["routes", "list", "--json"]).await.json();
-    let id = j["data"][0]["id"].as_str().unwrap().to_string();
+    assert!(j[0].get("created_at").is_none(), "legacy route shape");
+    let id = j[0]["id"].as_str().unwrap().to_string();
     assert!(
         cli.run(&["routes", "ls"])
             .await
@@ -135,7 +137,7 @@ async fn geoip_rules_and_database() {
         "{}",
         l.out
     );
-    let id = cli.run(&["geoip", "list", "--json"]).await.json()["data"][0]["id"]
+    let id = cli.run(&["geoip", "list", "--json"]).await.json()[0]["id"]
         .as_str()
         .unwrap()
         .to_string();

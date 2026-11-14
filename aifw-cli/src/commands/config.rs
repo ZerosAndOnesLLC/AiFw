@@ -290,7 +290,8 @@ pub async fn run(ctx: &mut Ctx, cmd: ConfigCmd) -> anyhow::Result<()> {
             if ctx.format().is_structured() {
                 return ctx.raw(&v);
             }
-            let s = &crate::cli::output::item(&v)["summary"];
+            // The summary fields are flattened into `data`.
+            let s = crate::cli::output::item(&v);
             if s["identical"] == json!(true) {
                 ctx.io
                     .println(&format!("Versions {v1} and {v2} are identical."));
@@ -299,10 +300,7 @@ pub async fn run(ctx: &mut Ctx, cmd: ConfigCmd) -> anyhow::Result<()> {
             let section = |name: &str, d: &Value| {
                 format!(
                     "  {name}: {} → {} (+{} −{})",
-                    d["v1_count"],
-                    d["v2_count"],
-                    d["added"].as_array().map_or(0, Vec::len),
-                    d["removed"].as_array().map_or(0, Vec::len)
+                    d["v1_count"], d["v2_count"], d["added"], d["removed"]
                 )
             };
             ctx.io.println(&format!("Version {v1} → {v2}"));

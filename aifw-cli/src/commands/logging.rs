@@ -234,7 +234,8 @@ pub async fn syslog(ctx: &mut Ctx, cmd: SyslogCmd) -> anyhow::Result<()> {
             }
             set(
                 "hostname_override",
-                hostname.map(|h| if h.is_empty() { Value::Null } else { json!(h) }),
+                // "" = use the system hostname (the field is a plain string).
+                hostname.map(|h| json!(h)),
             );
             set("pf_enabled", pf.map(|v| json!(v)));
             set("ids_enabled", ids.map(|v| json!(v)));
@@ -260,7 +261,8 @@ pub async fn syslog(ctx: &mut Ctx, cmd: SyslogCmd) -> anyhow::Result<()> {
                 }
                 cfg
             } else {
-                json!({})
+                // No body = test the saved configuration.
+                Value::Null
             };
             let v = client.post("/settings/syslog/test", &body).await?;
             if ctx.format().is_structured() {

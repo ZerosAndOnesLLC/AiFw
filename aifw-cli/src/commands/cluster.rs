@@ -531,10 +531,19 @@ pub async fn run(ctx: &mut Ctx, cmd: ClusterCmd) -> anyhow::Result<()> {
 /// stdout (one document; scripts/ha-verify.sh parses it) and the command
 /// exits non-zero on any failure.
 async fn verify(ctx: &mut Ctx, client: &aifw_client::Client, as_json: bool) -> anyhow::Result<()> {
-    let failures = verify_failures(client).await;
+    // Kernel checks look at *this* machine: run them only when the target
+    // is this appliance; a remote target (--context fw2, fan-out) gets the
+    // API-side checks, and `scope` says which ran.
+    let local = crate::cli::onbox::is_loopback(&ctx.target()?.url);
+    let failures = verify_failures(client, local).await;
     let status = client.get("/cluster/status").await.unwrap_or(Value::Null);
     if as_json || ctx.format().is_structured() {
-        ctx.raw(&json!({ "ok": failures.is_empty(), "failures": failures, "status": status }))?;
+        ctx.raw(&json!({
+            "ok": failures.is_empty(),
+            "failures": failures,
+            "status": status,
+            "scope": if local { "local" } else { "api-only" },
+        }))?;
     } else if failures.is_empty() {
         ctx.io.println("OK — cluster healthy");
     } else {
@@ -553,7 +562,9 @@ async fn verify(ctx: &mut Ctx, client: &aifw_client::Client, as_json: bool) -> a
 /// `pfctl -sr` for a `set` option that never appears there, and required a
 /// received-snapshot hash that only a standby ever has — a healthy primary
 /// could not pass).
-async fn verify_failures(client: &aifw_client::Client) -> Vec<String> {
+/// Kernel-side checks; they inspect the machine the CLI runs on, so they
+/// only make sense when the target is this appliance.
+async fn kernel_failures() -> Vec<String> {
     let mut failures: Vec<String> = Vec::new();
     if std::env::consts::OS != "freebsd" {
         failures.push(format!(
@@ -600,6 +611,15 @@ async fn verify_failures(client: &aifw_client::Client) -> Vec<String> {
         failures.push(format!("demotion held: {}", names.join(", ")));
     }
 
+    failures
+}
+
+async fn verify_failures(client: &aifw_client::Client, local: bool) -> Vec<String> {
+    let mut failures = if local {
+        kernel_failures().await
+    } else {
+        Vec::new()
+    };
     // 3. API view: peer answering, no split brain, replication state
     match client.get("/cluster/status").await {
         Ok(st) => {

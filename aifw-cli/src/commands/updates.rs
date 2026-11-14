@@ -67,9 +67,10 @@ pub enum UpdateCmd {
         target: Option<String>,
         #[arg(short = 'y', long)]
         yes: bool,
-        /// Follow progress until it finishes or needs a reboot
+        /// Return right after starting instead of following progress
+        /// until it finishes or needs a reboot
         #[arg(long)]
-        wait: bool,
+        no_wait: bool,
     },
     /// Update status (versions, pending OS packages, reboot needed)
     Status,
@@ -224,7 +225,8 @@ pub async fn run(ctx: &mut Ctx, cmd: UpdateCmd) -> anyhow::Result<()> {
             let bytes = std::fs::read(&path)
                 .map_err(|e| CliError::Usage(format!("{}: {e}", path.display())))?;
             let size_mb = bytes.len() / (1024 * 1024);
-            if !yes {
+            // --restart or --yes both mean "non-interactive", as before.
+            if !restart {
                 ctx.io.println(&format!(
                     "Install from local tarball: {} ({size_mb} MB)",
                     path.display()
@@ -366,7 +368,7 @@ pub async fn run(ctx: &mut Ctx, cmd: UpdateCmd) -> anyhow::Result<()> {
                 )
                 .await
                 .map_err(|e| local_hint(e, "os-check"))?;
-            ctx.message(&v, "OS update check finished")
+            ctx.service_message(&v, "OS update check finished")
         }
         UpdateCmd::OsInstall => {
             let v = client
@@ -378,9 +380,16 @@ pub async fn run(ctx: &mut Ctx, cmd: UpdateCmd) -> anyhow::Result<()> {
                 )
                 .await
                 .map_err(|e| local_hint(e, "os-install"))?;
-            ctx.message(&v, "OS updates installed")
+            ctx.service_message(&v, "OS updates installed")
         }
-        UpdateCmd::OsUpgrade { target, yes, wait } => {
+        UpdateCmd::OsUpgrade {
+            target,
+            yes,
+            no_wait,
+        } => {
+            // Starting an upgrade follows it (as the pre-API command did);
+            // with no target this just shows where a running one is.
+            let wait = target.is_some() && !no_wait;
             if let Some(t) = target {
                 ctx.confirm(
                     &format!(
@@ -404,12 +413,10 @@ pub async fn run(ctx: &mut Ctx, cmd: UpdateCmd) -> anyhow::Result<()> {
             ctx.list(
                 &v,
                 &[
-                    col("TIME", "/timestamp"),
-                    col("KIND", "/kind"),
-                    col("FROM", "/from_version"),
-                    col("TO", "/to_version"),
+                    col("TIME", "/created_at"),
+                    col("ACTION", "/action"),
                     col("RESULT", "/status"),
-                    col("MESSAGE", "/message"),
+                    col("DETAILS", "/details"),
                 ],
             )
         }

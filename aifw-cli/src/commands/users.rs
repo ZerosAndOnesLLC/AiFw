@@ -4,7 +4,7 @@ use clap::Subcommand;
 use serde_json::{Value, json};
 
 use crate::cli::exit::CliError;
-use crate::cli::{Ctx, Format, col, prompt, wide};
+use crate::cli::{Ctx, col, prompt, wide};
 
 #[derive(Debug, Subcommand)]
 pub enum UsersCmd {
@@ -97,10 +97,10 @@ pub async fn run(ctx: &mut Ctx, cmd: UsersCmd) -> anyhow::Result<()> {
     let client = ctx.client()?;
     match cmd {
         UsersCmd::List { json } => {
-            if json {
-                ctx.force_format(Format::Json);
-            }
             let v = client.get("/auth/users").await?;
+            if json {
+                return ctx.legacy_json(&v, Some(&legacy_user));
+            }
             ctx.list(&v, COLS)
         }
         UsersCmd::Show { user } => {
@@ -199,4 +199,9 @@ async fn update(
     }
     ctx.io.println(&format!("User {name}: {what}"));
     Ok(())
+}
+
+/// Row shape the pre-API `users list --json` printed (`mfa`, not `totp_enabled`).
+fn legacy_user(u: &Value) -> Value {
+    json!({ "id": u["id"], "username": u["username"], "role": u["role"], "mfa": u["totp_enabled"], "enabled": u["enabled"] })
 }

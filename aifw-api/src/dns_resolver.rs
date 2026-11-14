@@ -2266,7 +2266,14 @@ pub async fn delete_acl(
 // bytes to user space, and finally cap at 200 lines for the response.
 pub async fn resolver_logs(
     State(state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<ApiResponse<Vec<String>>>, StatusCode> {
+    // Same `?lines=N` as the other service log tails (default 200, max 2000).
+    let want = params
+        .get("lines")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(200)
+        .clamp(1, 2000);
     let config = load_config(&state.pool).await;
     let is_rdns = config.backend == "rdns";
     // rDNS' rc.d script runs under daemon(8) with -o /var/log/rdns/rdns.log,
@@ -2281,7 +2288,7 @@ pub async fn resolver_logs(
         &[primary_path, fallback_path],
         Some(filter_term),
         5000,
-        200,
+        want,
     )
     .await;
     Ok(Json(ApiResponse { data: lines }))

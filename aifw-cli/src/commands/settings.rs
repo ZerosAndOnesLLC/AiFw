@@ -46,8 +46,63 @@ pub fn kv_pairs(pairs: &[String]) -> Result<Map<String, Value>, CliError> {
     Ok(m)
 }
 
+/// Sections whose PUT patches a fixed set of keys; anything else would be
+/// silently ignored by the API, so refuse it here.
+const PATCH_SECTIONS: &[&str] = &["tls", "valkey", "ids-alerts", "ai", "dashboard-history"];
+
+async fn check_known_keys(
+    client: &aifw_client::Client,
+    section: &str,
+    kv: &Map<String, Value>,
+    file: &Value,
+) -> anyhow::Result<()> {
+    if !PATCH_SECTIONS.contains(&section) {
+        return Ok(());
+    }
+    let cur = client.get(&format!("/settings/{section}")).await?;
+    // AI settings take provider-scoped keys that aren't in its GET shape.
+    let extra: &[&str] = match section {
+        "ai" => &[
+            "provider",
+            "api_key",
+            "endpoint",
+            "model",
+            "provider_enabled",
+            "tls_insecure",
+        ],
+        "dashboard-history" => &["mode", "history_seconds", "ram_limit_mb"],
+        _ => &[],
+    };
+    let known = |k: &str| cur.get(k).is_some() || extra.contains(&k);
+    let given = kv
+        .keys()
+        .chain(file.as_object().into_iter().flat_map(|o| o.keys()));
+    let unknown: Vec<&String> = given.filter(|k| !known(k)).collect();
+    if !unknown.is_empty() {
+        let mut keys: Vec<&String> = cur
+            .as_object()
+            .map(|o| o.keys().collect())
+            .unwrap_or_default();
+        keys.sort();
+        return Err(CliError::Usage(format!(
+            "unknown {section} setting(s): {} (known: {})",
+            unknown
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+            keys.iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+        .into());
+    }
+    Ok(())
+}
+
 /// Sections whose PUT replaces the whole object: send current + changes.
-const FULL_REPLACE: &[&str] = &["syslog", "log-rotation", "pf-tuning"];
+const FULL_REPLACE: &[&str] = &["syslog", "log-rotation"];
 
 pub async fn run(ctx: &mut Ctx, cmd: SettingsCmd) -> anyhow::Result<()> {
     let client = ctx.client()?;
@@ -72,6 +127,19 @@ pub async fn run(ctx: &mut Ctx, cmd: SettingsCmd) -> anyhow::Result<()> {
                 crate::cli::body::merge(&mut body, &patch);
             }
             let kv = kv_pairs(&values)?;
+            // pf-tuning's GET reports `max_states` as the *upper bound*
+            // (the real value is `configured_max_states`), so never echo
+            // the GET back: the PUT takes exactly `max_states`.
+            if section == "pf-tuning"
+                && !kv.contains_key("max_states")
+                && body.get("max_states").is_none()
+            {
+                return Err(CliError::Usage(
+                    "pf-tuning takes max_states=<n> (see `aifw settings get pf-tuning`)".into(),
+                )
+                .into());
+            }
+            check_known_keys(&client, &section, &kv, &body).await?;
             if kv.is_empty() && body.as_object().is_some_and(Map::is_empty) {
                 return Err(CliError::Usage(
                     "nothing to change: pass key=value pairs or -f file".into(),
@@ -101,6 +169,8 @@ pub async fn run(ctx: &mut Ctx, cmd: SettingsCmd) -> anyhow::Result<()> {
             let r = Resource {
                 path: "/auth/oauth/providers".into(),
                 what: "OAuth provider",
+                update: false,
+                toggle: false,
                 cols: vec![
                     col("ID", "/id"),
                     col("NAME", "/name"),

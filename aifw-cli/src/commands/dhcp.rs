@@ -4,7 +4,7 @@ use clap::Subcommand;
 use serde_json::{Value, json};
 
 use crate::cli::body::{self, Fields};
-use crate::cli::{Ctx, Format, col, wide};
+use crate::cli::{Ctx, col, wide};
 
 #[derive(Debug, Subcommand)]
 pub enum DhcpCmd {
@@ -126,19 +126,20 @@ fn csv(s: &str) -> Vec<String> {
         .collect()
 }
 
-/// Subnet as returned → request shape (dns_servers is a comma string on
-/// the way out, a list on the way in).
+/// Subnet as returned → request shape. List fields come back as comma
+/// strings and go in as arrays; `null` stays `null` (a subnet without its
+/// own DNS servers inherits the global ones — sending `[]` would turn
+/// that into "no DNS at all").
 fn subnet_request(s: &Value) -> Value {
     let mut r = s.clone();
     if let Some(o) = r.as_object_mut() {
         for k in ["id", "created_at", "updated_at"] {
             o.remove(k);
         }
-        if let Some(d) = o.get("dns_servers").and_then(Value::as_str).map(csv) {
-            o.insert("dns_servers".into(), json!(d));
-        }
-        if o.get("dns_servers").is_some_and(Value::is_null) {
-            o.insert("dns_servers".into(), json!([]));
+        for k in ["dns_servers", "ntp_servers", "trusted_relays"] {
+            if let Some(list) = o.get(k).and_then(Value::as_str).map(csv) {
+                o.insert(k.into(), json!(list));
+            }
         }
     }
     r
@@ -178,10 +179,10 @@ pub async fn run(ctx: &mut Ctx, cmd: DhcpCmd) -> anyhow::Result<()> {
             ctx.service_message(&v, "DHCP config applied")
         }
         DhcpCmd::Subnets { json } => {
-            if json {
-                ctx.force_format(Format::Json);
-            }
             let v = client.get("/dhcp/v4/subnets").await?;
+            if json {
+                return ctx.legacy_json(&v, Some(&legacy_subnet));
+            }
             ctx.list(
                 &v,
                 &[
@@ -267,10 +268,10 @@ pub async fn run(ctx: &mut Ctx, cmd: DhcpCmd) -> anyhow::Result<()> {
             ctx.message(&v, &format!("Removed subnet {id}"))
         }
         DhcpCmd::Reservations { json } => {
-            if json {
-                ctx.force_format(Format::Json);
-            }
             let v = client.get("/dhcp/v4/reservations").await?;
+            if json {
+                return ctx.legacy_json(&v, Some(&legacy_reservation));
+            }
             ctx.list(
                 &v,
                 &[
@@ -315,10 +316,10 @@ pub async fn run(ctx: &mut Ctx, cmd: DhcpCmd) -> anyhow::Result<()> {
             ctx.message(&v, &format!("Removed reservation {id}"))
         }
         DhcpCmd::Leases { json } => {
-            if json {
-                ctx.force_format(Format::Json);
-            }
             let v = client.get("/dhcp/v4/leases").await?;
+            if json {
+                return ctx.legacy_json(&v, Some(&legacy_lease));
+            }
             ctx.list(
                 &v,
                 &[
@@ -334,10 +335,65 @@ pub async fn run(ctx: &mut Ctx, cmd: DhcpCmd) -> anyhow::Result<()> {
         DhcpCmd::Release { ip, yes } => {
             ctx.confirm(&format!("Release the lease for {ip}?"), yes)?;
             let v = client.delete(&format!("/dhcp/v4/leases/{ip}")).await?;
-            ctx.message(&v, &format!("Released {ip}"))
+            ctx.service_message(&v, &format!("Released {ip}"))
         }
         DhcpCmd::Logs { lines, follow } => {
             super::logs::tail(ctx, &client, &format!("/dhcp/logs?lines={lines}"), follow).await
         }
+    }
+}
+
+/// Row shapes the pre-API `dhcp … --json` printed.
+fn legacy_subnet(s: &Value) -> Value {
+    json!({
+        "id": s["id"], "network": s["network"], "pool_start": s["pool_start"],
+        "pool_end": s["pool_end"], "gateway": s["gateway"], "enabled": s["enabled"],
+    })
+}
+
+fn legacy_reservation(r: &Value) -> Value {
+    json!({ "id": r["id"], "mac": r["mac_address"], "ip": r["ip_address"], "hostname": r["hostname"] })
+}
+
+fn legacy_lease(l: &Value) -> Value {
+    let mut out = l.clone();
+    if let Some(o) = out.as_object_mut() {
+        if let Some(ip) = o.remove("ip_address") {
+            o.insert("ip".into(), ip);
+        }
+        if let Some(mac) = o.remove("mac_address") {
+            o.insert("mac".into(), mac);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod legacy_tests {
+    use super::*;
+
+    #[test]
+    fn subnet_edit_keeps_inherited_dns_and_lists_ntp() {
+        let r = subnet_request(
+            &json!({"id": "x", "network": "10.0.0.0/24", "dns_servers": null, "ntp_servers": "10.0.0.1, 10.0.0.2"}),
+        );
+        assert_eq!(r["dns_servers"], Value::Null, "inherit global DNS");
+        assert_eq!(r["ntp_servers"], json!(["10.0.0.1", "10.0.0.2"]));
+        assert!(r.get("id").is_none());
+    }
+
+    #[test]
+    fn legacy_shapes() {
+        let r = legacy_reservation(
+            &json!({"id": "1", "mac_address": "aa", "ip_address": "10.0.0.2", "hostname": "h", "subnet_id": "s"}),
+        );
+        assert_eq!(
+            r,
+            json!({"id": "1", "mac": "aa", "ip": "10.0.0.2", "hostname": "h"})
+        );
+        let l = legacy_lease(
+            &json!({"ip_address": "10.0.0.3", "mac_address": "bb", "state": "active"}),
+        );
+        assert_eq!(l, json!({"ip": "10.0.0.3", "mac": "bb", "state": "active"}));
     }
 }

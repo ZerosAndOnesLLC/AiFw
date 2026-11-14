@@ -105,6 +105,9 @@ fn res(path: &str) -> Resource {
     Resource {
         path: path.to_string(),
         what: "object",
+        update: true,
+        // TLS certs/options and cert resolvers have no `enabled` field.
+        toggle: !(path.contains("/tls/") || path.ends_with("cert-resolvers")),
         cols: cols_for(path),
     }
 }

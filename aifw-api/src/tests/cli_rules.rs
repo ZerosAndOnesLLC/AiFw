@@ -59,8 +59,8 @@ async fn add_list_show_edit_remove() {
 
     // Legacy --json still works for scripts.
     let j = cli.run(&["rules", "list", "--json"]).await.json();
-    assert_eq!(j["data"][0]["id"], id);
-    assert_eq!(j["data"][0]["log"], true);
+    assert_eq!(j[0]["id"], id, "bare array, as before");
+    assert_eq!(j[0]["log"], true);
 
     let s = cli.run(&["rules", "show", &id]).await;
     s.ok();

@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use crate::cli::body::{self, Fields};
 use crate::cli::exit::CliError;
-use crate::cli::{Ctx, Format, col, wide};
+use crate::cli::{Ctx, col, wide};
 
 #[derive(Debug, Subcommand)]
 pub enum RulesCmd {
@@ -313,10 +313,10 @@ pub async fn run(ctx: &mut Ctx, cmd: RulesCmd) -> anyhow::Result<()> {
     let client = ctx.client()?;
     match cmd {
         RulesCmd::List { json } => {
-            if json {
-                ctx.force_format(Format::Json);
-            }
             let v = client.get("/rules").await?;
+            if json {
+                return ctx.legacy_json(&v, None);
+            }
             ctx.list_mapped(&v, COLS, table_row)
         }
         RulesCmd::Show { id } => {
