@@ -507,3 +507,12 @@ async fn refresh_adopts_a_pair_rotated_elsewhere() {
     c.get("/me").await.unwrap();
     assert_eq!(*m.refreshes.lock().unwrap(), 0, "no network refresh");
 }
+
+/// The on-box pin source missing is an error, not an unpinned connection.
+#[test]
+fn unreadable_pin_file_is_refused() {
+    let r = Client::builder("https://127.0.0.1:8080")
+        .pin_file("/nonexistent/cert.pem")
+        .build();
+    assert!(matches!(r, Err(ClientError::Tls { .. })));
+}

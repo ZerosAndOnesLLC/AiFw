@@ -3,6 +3,7 @@ name = "aifw-client"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Typed async client for the AiFw REST API (used by the aifw CLI) plus the shared TLS pinning"
 
 [dependencies]
@@ -17,6 +18,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time", "rt"] }
 url = { workspace = true }
+webpki-roots = "1"
 chrono = { workspace = true }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 

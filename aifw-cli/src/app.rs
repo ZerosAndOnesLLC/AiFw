@@ -399,7 +399,7 @@ where
         && ctx.used_onbox_cli_key
         && crate::cli::onbox::is_root()
     {
-        match crate::commands::local::provision_cli_key(&ctx.onbox) {
+        match crate::commands::local::provision_cli_key(&ctx.onbox, true) {
             Ok(_) => {
                 ctx.io.eprintln(
                     "note: the on-box CLI key was rejected; minted a new one and retrying",

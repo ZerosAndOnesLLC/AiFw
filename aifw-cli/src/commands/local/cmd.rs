@@ -120,7 +120,7 @@ fn cli_key(ctx: &mut Ctx, rotate: bool) -> anyhow::Result<()> {
         ));
         return Ok(());
     }
-    let key = super::provision_cli_key(&ctx.onbox)?;
+    let key = super::provision_cli_key(&ctx.onbox, true)?;
     let v = json!({ "path": path.display().to_string(), "prefix": &key[..12] });
     if ctx.format().is_structured() {
         return ctx.raw(&v);

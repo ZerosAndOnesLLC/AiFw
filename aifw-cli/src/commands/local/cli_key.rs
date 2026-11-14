@@ -21,13 +21,19 @@ pub const CLI_KEY_NAME: &str = "aifw-cli-local";
 /// Locked service account that owns the key (no password login).
 pub const CLI_USERNAME: &str = "aifw-cli";
 
-/// Mint (or rotate) the on-box CLI key: write the DB rows, then the key
-/// file (0600). Returns the key.
-pub fn provision_cli_key(onbox: &OnBox) -> anyhow::Result<String> {
+/// Mint the on-box CLI key: write the DB rows, then the key file (0600).
+/// Returns the key. Serialized with a lock file: when `rotate` is false and
+/// another process minted a key while we waited, that key is returned
+/// instead of minting a second one.
+pub fn provision_cli_key(onbox: &OnBox, rotate: bool) -> anyhow::Result<String> {
     // Called from sync resolution code; run the async DB work on a scoped
     // runtime-independent thread so it works inside or outside tokio.
     let onbox = onbox.clone();
     std::thread::spawn(move || {
+        let _lock = lock_file(&onbox)?;
+        if !rotate && let Some(k) = crate::cli::onbox::read_key(&onbox.cli_key) {
+            return Ok(k);
+        }
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?
@@ -47,6 +53,7 @@ async fn provision_async(onbox: &OnBox) -> anyhow::Result<String> {
     let hash = aifw_common::password::hash_password(&key)
         .map_err(|e| anyhow::anyhow!("hashing CLI key: {e}"))?;
 
+    precreate_sidecars(&onbox.db);
     let opts = SqliteConnectOptions::new()
         .filename(&onbox.db)
         .create_if_missing(false)
@@ -56,7 +63,9 @@ async fn provision_async(onbox: &OnBox) -> anyhow::Result<String> {
         .with_context(|| format!("opening {}", onbox.db.display()))?;
 
     let now = chrono::Utc::now().to_rfc3339();
-    let mut tx = pool.begin().await?;
+    // IMMEDIATE takes the write lock up front, so a concurrent minter (or
+    // the API) can't interleave between our read of the user and the write.
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let user_id: Option<String> = sqlx::query_scalar("SELECT id FROM users WHERE username = ?1")
         .bind(CLI_USERNAME)
         .fetch_optional(&mut *tx)
@@ -108,6 +117,52 @@ async fn provision_async(onbox: &OnBox) -> anyhow::Result<String> {
     crate::cli::config::write_atomic(&onbox.cli_key, format!("{key}\n").as_bytes(), 0o600)
         .with_context(|| format!("writing {}", onbox.cli_key.display()))?;
     Ok(key)
+}
+
+/// Exclusive lock beside the key file, held for the whole mint.
+fn lock_file(onbox: &OnBox) -> anyhow::Result<nix::fcntl::Flock<std::fs::File>> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let dir = onbox
+        .cli_key
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("{} has no parent", onbox.cli_key.display()))?;
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .mode(0o600)
+        .open(dir.join(".cli.key.lock"))
+        .context("opening the CLI key lock")?;
+    nix::fcntl::Flock::lock(f, nix::fcntl::FlockArg::LockExclusive)
+        .map_err(|(_, e)| anyhow::anyhow!("locking the CLI key: {e}"))
+}
+
+/// Create missing `-wal`/`-shm` sidecars up front with the database
+/// file's owner, so opening the database as root never leaves root-owned
+/// sidecars (even briefly) that would lock the `aifw` service user out.
+fn precreate_sidecars(db: &Path) {
+    let Ok(meta) = std::fs::metadata(db) else {
+        return;
+    };
+    for suffix in ["-wal", "-shm"] {
+        let side = db.with_file_name(format!(
+            "{}{suffix}",
+            db.file_name().and_then(|n| n.to_str()).unwrap_or("aifw.db")
+        ));
+        if side.exists() {
+            continue;
+        }
+        let created = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&side);
+        if created.is_ok()
+            && let Err(e) = std::os::unix::fs::chown(&side, Some(meta.uid()), Some(meta.gid()))
+        {
+            tracing::warn!(path = %side.display(), error = %e, "could not set database sidecar owner");
+        }
+    }
 }
 
 /// Opening the database as root can create `-wal`/`-shm` sidecars owned by
@@ -175,7 +230,7 @@ mod tests {
         };
         scratch_db(&onbox.db).await;
 
-        let k1 = provision_cli_key(&onbox).unwrap();
+        let k1 = provision_cli_key(&onbox, false).unwrap();
         assert!(k1.starts_with("aifw_") && k1.len() == 69);
         assert_eq!(std::fs::read_to_string(&onbox.cli_key).unwrap().trim(), k1);
         let mode = std::fs::metadata(&onbox.cli_key)
@@ -184,7 +239,9 @@ mod tests {
             .mode();
         assert_eq!(mode & 0o777, 0o600);
 
-        let k2 = provision_cli_key(&onbox).unwrap();
+        // Without rotate, an existing key is reused (another process won).
+        assert_eq!(provision_cli_key(&onbox, false).unwrap(), k1);
+        let k2 = provision_cli_key(&onbox, true).unwrap();
         assert_ne!(k1, k2, "rotates");
 
         let pool = SqlitePool::connect_with(SqliteConnectOptions::new().filename(&onbox.db))
@@ -224,7 +281,7 @@ mod tests {
             daemon_key: dir.join("d"),
             db: dir.join("nope.db"),
         };
-        assert!(provision_cli_key(&onbox).is_err());
+        assert!(provision_cli_key(&onbox, false).is_err());
         assert!(!onbox.cli_key.exists());
     }
 }

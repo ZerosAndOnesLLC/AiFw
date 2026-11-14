@@ -154,7 +154,12 @@ connection resolution, output, prompts, exit codes, fan-out) is in
   (`cli_harness.rs`). `app.rs` `compat_tests` pins every external caller's
   invocation (maintenance cron, aifw-console, ha-verify.sh, build scripts).
 - On the box, root authenticates with `/usr/local/etc/aifw/cli.key`
-  (reserved key name `aifw-cli-local`, minted on first use).
+  (reserved key name `aifw-cli-local`, minted on first use, re-minted on 401).
+  On-box automation must call `aifw --context local …` (`local` is reserved:
+  always this appliance) — see the maintenance cron (`/etc/cron.d/aifw-updates`),
+  aifw-console and `scripts/ha-verify.sh`.
+- Fan-out is allowed only for the exact paths in `cli/fanout.rs`
+  `READ_ONLY_PATHS`; add new read-only commands there (a test checks each exists).
 
 ## Web UI
 

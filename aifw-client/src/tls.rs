@@ -79,6 +79,11 @@ struct PinnedCert {
     expected: String,
     label: String,
     provider: Arc<rustls::crypto::CryptoProvider>,
+    /// When set, a certificate that doesn't match the pin is still accepted
+    /// if it validates against the public web PKI for the server name — so
+    /// an ACME renewal on a properly named appliance doesn't break the CLI.
+    /// Never set for cluster peers (addressed by IP, mostly self-signed).
+    public_ca: Option<Arc<dyn ServerCertVerifier>>,
 }
 
 impl ServerCertVerifier for PinnedCert {
@@ -92,6 +97,14 @@ impl ServerCertVerifier for PinnedCert {
     ) -> Result<ServerCertVerified, rustls::Error> {
         let got = fingerprint_der(end_entity.as_ref());
         if got == self.expected {
+            return Ok(ServerCertVerified::assertion());
+        }
+        if let Some(ca) = &self.public_ca
+            && ca
+                .verify_server_cert(end_entity, _intermediates, _server_name, _ocsp, _now)
+                .is_ok()
+        {
+            debug!(peer = %self.label, "pin changed but the certificate is publicly trusted for this name");
             return Ok(ServerCertVerified::assertion());
         }
         warn!(
@@ -181,6 +194,7 @@ pub fn client_builder_for(
                 expected: fp.to_ascii_lowercase(),
                 label: label.to_string(),
                 provider: provider(),
+                public_ca: None,
             });
             let cfg = rustls::ClientConfig::builder_with_provider(provider())
                 .with_safe_default_protocol_versions()
@@ -198,6 +212,38 @@ pub fn client_builder_for(
             build(reqwest::Client::builder().danger_accept_invalid_certs(true))
         }
     }
+}
+
+/// Like [`client_builder_for`] with a pin, but a certificate that no longer
+/// matches the pin is also accepted when it is publicly trusted (web PKI)
+/// for the server's name. For the CLI's saved contexts: a self-signed
+/// appliance stays pinned, and an appliance with a Let's Encrypt
+/// certificate keeps working across renewals.
+pub fn client_builder_pinned_or_public(
+    pin: &str,
+    label: &str,
+) -> Result<reqwest::ClientBuilder, TlsError> {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let public =
+        rustls::client::WebPkiServerVerifier::builder_with_provider(Arc::new(roots), provider())
+            .build()
+            .map_err(|e| TlsError(format!("peer_tls: web PKI verifier: {e}")))?;
+    let verifier = Arc::new(PinnedCert {
+        expected: pin.to_ascii_lowercase(),
+        label: label.to_string(),
+        provider: provider(),
+        public_ca: Some(public),
+    });
+    let cfg = rustls::ClientConfig::builder_with_provider(provider())
+        .with_safe_default_protocol_versions()
+        .map_err(|e| TlsError(format!("peer_tls: rustls config: {e}")))?
+        .dangerous()
+        .with_custom_certificate_verifier(verifier)
+        .with_no_client_auth();
+    Ok(reqwest::Client::builder()
+        .tls_backend_preconfigured(cfg)
+        .tls_info(true))
 }
 
 /// HTTPS client for the local aifw-api (daemon loopback), pinned to the
@@ -307,6 +353,7 @@ mod tests {
             expected: fingerprint_der(cert.der()),
             label: "t".into(),
             provider: provider(),
+            public_ca: None,
         };
         let name = ServerName::try_from("peer.test").unwrap();
         let now = UnixTime::now();

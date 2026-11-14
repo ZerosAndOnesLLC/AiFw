@@ -50,7 +50,14 @@ aifw rules list
 
 The first time it runs as root, `aifw` creates an admin API key for itself in
 `/usr/local/etc/aifw/cli.key` (mode 0600) and talks to `https://127.0.0.1:8080`,
-pinned to the API's own certificate. `aifw local cli-key --rotate` replaces it.
+pinned to the API's own certificate. `aifw local cli-key --rotate` replaces it;
+if the key is ever rejected (say the database was re-initialised), `aifw` mints a
+new one and retries by itself.
+
+The context name `local` is reserved for the appliance itself. Scripts and cron
+jobs on the box should use `aifw --context local …` so they always act on this
+firewall, even if root once ran `aifw login` against another one (the maintenance
+window, the console menu and `scripts/ha-verify.sh` all do).
 
 ### From another machine
 
@@ -60,7 +67,11 @@ aifw login https://fw1.example.com:8080 --context fw1
 
 `login` shows the SHA-256 fingerprint of the certificate the firewall presents
 and asks before trusting it (compare it with **Settings → TLS** in the UI), then
-asks for your username, password and TOTP code. Pass `--pin <fingerprint>` to
+asks for your username, password and TOTP code. If the firewall later serves a
+different certificate that is publicly trusted for its name (a renewed Let's
+Encrypt certificate), it is accepted; a changed self-signed certificate is
+refused until you re-pin with `aifw context set-pin`. Logging in over plain
+`http://` to another machine needs `--allow-http`. Pass `--pin <fingerprint>` to
 skip the question, `--password-stdin` for scripts, or log in with an API key:
 
 ```sh
@@ -138,8 +149,10 @@ API's own response unchanged, so scripts get a stable shape. The old per-command
 | 8 | Fan-out: some contexts failed |
 | 9 | Commit-confirm: nothing to confirm (the change rolled back) |
 
-Commands that delete or replace things ask first. `-y/--yes` answers yes;
-with no terminal (cron) an unanswered prompt means **no**.
+Commands that delete or replace things ask first (removes, restores,
+`config import`, `update reboot`, `cluster demote`, …). `-y/--yes` answers yes;
+with no terminal (cron) an unanswered prompt means **no** — scripts that used
+`aifw … rm` without a prompt before the API-client CLI need `--yes` now.
 
 ## Staged changes and commit-confirm
 
@@ -161,7 +174,7 @@ aifw confirm accept          # keep it; if you lost access, it reverts by itself
 ```
 
 `aifw pending --watch` streams pending-state changes. `aifw reload` = apply plus
-re-applying traffic-shaping queues.
+re-applying traffic-shaping queues and rate limits.
 
 ## Several firewalls at once
 
@@ -174,7 +187,10 @@ aifw --all-contexts cluster verify -o json
 
 Tables print one section per firewall; JSON is
 `[{"context":…,"exit_code":…,"result":…,"error":…}]`. The exit code is 0 when all
-succeed, 8 when some fail. Commands that change things refuse to fan out.
+succeed, 8 when some fail. Commands that change things refuse to fan out, and so
+do `--api-key`, `--url`, `--pin` and `AIFW_TOKEN`: each firewall is reached with
+its own saved credentials. `cluster verify` against another firewall runs only the
+API-side checks (`"scope": "api-only"`); the kernel checks need to run on the node.
 
 ## Command reference
 

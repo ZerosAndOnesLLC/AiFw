@@ -105,14 +105,19 @@ impl ClientBuilder {
         } else {
             let pin = match &self.trust {
                 Trust::Pin(fp) => Some(fp.clone()),
+                // On the box the CLI carries root's key: never fall back to
+                // accepting any certificate when the pin source is missing.
                 Trust::PinFile(p) => match tls::fingerprint_pem_file(p) {
                     Some(fp) => Some(fp),
                     None => {
-                        tracing::warn!(
-                            path = %p.display(),
-                            "API certificate not readable — not pinning this connection"
-                        );
-                        None
+                        return Err(ClientError::Tls {
+                            url: base.to_string(),
+                            reason: format!(
+                                "cannot read the API certificate {} to pin the connection (run as root, or `aifw login {}` to pin it explicitly)",
+                                p.display(),
+                                base
+                            ),
+                        });
                     }
                 },
                 Trust::AcceptAny | Trust::Default => None,
@@ -121,6 +126,11 @@ impl ClientBuilder {
                 // https with no pin configured: use normal WebPKI validation
                 // (e.g. an ACME certificate on a proper hostname).
                 reqwest::Client::builder().tls_info(true)
+            } else if let (Trust::Pin(p), Some(_)) = (&self.trust, &pin) {
+                // A saved/explicit pin: also accept a publicly trusted
+                // certificate for this name (ACME renewals).
+                tls::client_builder_pinned_or_public(p, &label)
+                    .map_err(|e| ClientError::Local(e.to_string()))?
             } else {
                 tls::client_builder_for(pin.as_deref(), &label)
                     .map_err(|e| ClientError::Local(e.to_string()))?

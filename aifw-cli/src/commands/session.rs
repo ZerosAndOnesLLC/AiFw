@@ -25,6 +25,10 @@ pub struct LoginArgs {
     /// TOTP or recovery code (prompted when the account needs one)
     #[arg(long, value_name = "CODE")]
     pub totp: Option<String>,
+    /// Allow logging in over plain http:// to another machine (sends the
+    /// password and session tokens unencrypted)
+    #[arg(long)]
+    pub allow_http: bool,
     /// Trust and pin the certificate the server presents without asking
     /// (prefer --pin with a fingerprint you verified out of band)
     #[arg(long)]
@@ -115,6 +119,16 @@ pub async fn login(ctx: &mut Ctx, a: LoginArgs) -> anyhow::Result<()> {
         _ => name_for(&url),
     });
     validate_context_name(&name)?;
+    if url.starts_with("http://") && !onbox::is_loopback(&url) && !a.allow_http {
+        return Err(CliError::Usage(format!(
+            "{url} is plain HTTP: your password and session would cross the network unencrypted. Use https://, or pass --allow-http"
+        ))
+        .into());
+    }
+    if ctx.g.pin.is_some() && url.starts_with("http://") {
+        ctx.io
+            .eprintln("warning: --pin has no effect on an http:// URL");
+    }
     if name == LOCAL_TARGET && !onbox::is_loopback(&url) {
         return Err(CliError::Usage(
             "the context name `local` is reserved for this appliance; pick another --context"

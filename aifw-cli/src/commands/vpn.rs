@@ -367,6 +367,26 @@ fn ipsec_status_row(s: &Value) -> Value {
     r
 }
 
+/// The API returns generated peer private keys and preshared keys in
+/// listings; lists (incl. `-o json`) never print them — use
+/// `vpn wg peers config` to hand a client its config.
+fn redact_peer_secrets(v: &mut Value) {
+    let rows = match v.get_mut("data") {
+        Some(Value::Array(a)) => a,
+        _ => match v {
+            Value::Array(a) => a,
+            _ => return,
+        },
+    };
+    for p in rows {
+        for k in ["client_private_key", "preshared_key"] {
+            if p.get(k).is_some_and(|x| !x.is_null()) {
+                p[k] = json!("REDACTED");
+            }
+        }
+    }
+}
+
 /// Tunnel as returned → the PUT body (secrets stay "REDACTED" = keep).
 fn wg_request(t: &Value) -> Value {
     json!({
@@ -500,6 +520,8 @@ async fn list_all(ctx: &mut Ctx) -> anyhow::Result<()> {
         let id = t["id"].as_str().unwrap_or_default();
         let peers = client.get(&format!("/vpn/wg/{id}/peers")).await?;
         let mut t = t.clone();
+        let mut peers = peers;
+        redact_peer_secrets(&mut peers);
         t["peers"] = json!(output::rows(&peers));
         tunnels.push(t);
     }
@@ -649,7 +671,8 @@ async fn wg(ctx: &mut Ctx, cmd: WgCmd) -> anyhow::Result<()> {
 async fn peers(ctx: &mut Ctx, client: &aifw_client::Client, cmd: PeerCmd) -> anyhow::Result<()> {
     match cmd {
         PeerCmd::List { tunnel } => {
-            let v = client.get(&format!("/vpn/wg/{tunnel}/peers")).await?;
+            let mut v = client.get(&format!("/vpn/wg/{tunnel}/peers")).await?;
+            redact_peer_secrets(&mut v);
             ctx.list(&v, PEER_COLS)
         }
         PeerCmd::Add {
@@ -864,6 +887,15 @@ async fn ipsec(ctx: &mut Ctx, cmd: IpsecCmd) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn peer_secrets_are_redacted() {
+        let mut v =
+            json!({"data": [{"name": "p", "client_private_key": "secret", "preshared_key": null}]});
+        redact_peer_secrets(&mut v);
+        assert_eq!(v["data"][0]["client_private_key"], "REDACTED");
+        assert!(v["data"][0]["preshared_key"].is_null());
+    }
 
     #[test]
     fn csv_split() {

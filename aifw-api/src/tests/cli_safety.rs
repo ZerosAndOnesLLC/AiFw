@@ -15,7 +15,7 @@ async fn local_context_name_is_reserved() {
         .run_stdin(
             &[
                 "login",
-                "http://10.0.0.9:8080",
+                "https://10.0.0.9:8080",
                 "--context",
                 "local",
                 "--api-key-stdin",
@@ -112,4 +112,68 @@ async fn logout_after_expiry_revokes() {
     // The harness's own admin_token() logins aren't used here, so the CLI
     // session was the only one.
     assert_eq!(live, 0, "no live refresh token left behind");
+}
+
+/// Plain HTTP to another machine needs an explicit opt-in.
+#[tokio::test]
+async fn login_refuses_remote_plain_http() {
+    let cli = Cli::start().await;
+    let r = cli
+        .run_stdin(
+            &[
+                "login",
+                "http://10.0.0.9:8080",
+                "--context",
+                "x",
+                "--api-key-stdin",
+            ],
+            "aifw_x\n",
+        )
+        .await;
+    r.code(2);
+    assert!(r.err.contains("--allow-http"), "{}", r.err);
+}
+
+/// List output never carries WireGuard peer secrets.
+#[tokio::test]
+async fn wireguard_lists_hide_peer_secrets() {
+    let cli = Cli::start().await;
+    cli.login_admin().await;
+    let t = cli
+        .run(&[
+            "vpn",
+            "wg",
+            "add",
+            "--name",
+            "r",
+            "--address",
+            "10.7.0.1/24",
+            "-o",
+            "json",
+        ])
+        .await
+        .json();
+    let tid = t["data"]["id"].as_str().unwrap().to_string();
+    cli.run(&[
+        "vpn",
+        "wg",
+        "peers",
+        "add",
+        &tid,
+        "--name",
+        "l",
+        "--generate-key",
+    ])
+    .await
+    .ok();
+    for args in [
+        &["vpn", "wg", "peers", "list", tid.as_str(), "-o", "json"][..],
+        &["vpn", "list", "-o", "json"],
+    ] {
+        let out = cli.run(args).await.out;
+        assert!(
+            !out.contains("PrivateKey") && out.contains("REDACTED"),
+            "{args:?}: {out}"
+        );
+    }
 }

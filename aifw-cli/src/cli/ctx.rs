@@ -87,6 +87,12 @@ impl Ctx {
     /// Client for the selected context, with the global `--timeout`.
     pub fn client(&mut self) -> anyhow::Result<Client> {
         let t = self.target()?;
+        if t.url.starts_with("http://") && !super::onbox::is_loopback(&t.url) {
+            self.io.eprintln(&format!(
+                "warning: {} is plain HTTP — credentials and data cross the network unencrypted",
+                t.url
+            ));
+        }
         connect::client(
             &t,
             &self.store,

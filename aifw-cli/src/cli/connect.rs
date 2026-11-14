@@ -80,7 +80,7 @@ pub fn onbox_auth(onbox: &OnBox) -> (Auth, String) {
         );
     }
     if onbox::is_root() && onbox.db.exists() {
-        match crate::commands::local::provision_cli_key(onbox) {
+        match crate::commands::local::provision_cli_key(onbox, false) {
             Ok(k) => {
                 return (
                     credential_from_token(&k),

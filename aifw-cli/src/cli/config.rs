@@ -164,16 +164,17 @@ pub fn write_atomic(path: &Path, data: &[u8], mode: u32) -> anyhow::Result<()> {
             .create(dir)
             .with_context(|| format!("creating {}", dir.display()))?;
     }
+    // Unpredictable name + create_new (O_CREAT|O_EXCL): never opens an
+    // existing file or a planted symlink.
     let tmp = dir.join(format!(
         ".{}.tmp-{}",
         path.file_name().and_then(|n| n.to_str()).unwrap_or("file"),
-        std::process::id()
+        uuid::Uuid::new_v4().simple()
     ));
     {
         let mut f = std::fs::OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
+            .create_new(true)
             .mode(mode)
             .open(&tmp)
             .with_context(|| format!("writing {}", tmp.display()))?;
