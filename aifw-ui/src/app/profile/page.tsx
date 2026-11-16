@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
+import { useApiKeys } from "@/hooks/useApiKeys";
+import ApiKeysCard from "./components/ApiKeysCard";
 
 interface UserProfile {
   id: string;
@@ -38,6 +40,8 @@ export default function ProfilePage() {
   const [disableCode, setDisableCode] = useState("");
   const [showDisable, setShowDisable] = useState(false);
   const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null);
+
+  const apiKeys = useApiKeys();
 
   const showFeedback = (type: "success" | "error", msg: string) => {
     setFeedback({ type, msg });
@@ -151,7 +155,7 @@ export default function ProfilePage() {
     <div className="space-y-6 max-w-2xl">
       <div>
         <h1 className="text-2xl font-bold">My Profile</h1>
-        <p className="text-sm text-[var(--text-muted)]">Manage your account, password, and multi-factor authentication</p>
+        <p className="text-sm text-[var(--text-muted)]">Manage your account, password, multi-factor authentication and API keys</p>
       </div>
 
       {feedback && (
@@ -318,6 +322,19 @@ export default function ProfilePage() {
           </form>
         )}
       </div>
+
+      <ApiKeysCard
+        keys={apiKeys.keys}
+        roles={apiKeys.roles}
+        loading={apiKeys.loading}
+        creating={apiKeys.creating}
+        revoking={apiKeys.revoking}
+        created={apiKeys.created}
+        feedback={apiKeys.feedback}
+        onCreate={apiKeys.create}
+        onRevoke={apiKeys.revoke}
+        onDismissCreated={apiKeys.dismissCreated}
+      />
     </div>
   );
 }

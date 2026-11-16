@@ -194,8 +194,21 @@ pub(super) async fn login_cookies(server: &TestServer) -> Vec<String> {
     set_cookies(&resp)
 }
 
+mod api_keys;
 mod auth;
 mod backup;
+mod cli_basic;
+mod cli_config;
+mod cli_coverage;
+mod cli_fanout;
+mod cli_harness;
+mod cli_nat;
+mod cli_ops;
+mod cli_review;
+mod cli_rules;
+mod cli_safety;
+mod cli_services;
+mod cli_session;
 mod cluster;
 mod cookies;
 mod plugins;

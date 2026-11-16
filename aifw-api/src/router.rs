@@ -51,6 +51,13 @@ pub(crate) fn self_service() -> Router<AppState> {
         .route("/api/v1/auth/totp/disable", post(routes::totp_disable))
         .route("/api/v1/auth/me", get(routes::get_current_user))
         .route("/api/v1/auth/ws-ticket", post(routes::issue_ws_ticket))
+        // Self-service API keys: the handlers enforce users:read/users:write
+        // for other users' keys.
+        .route(
+            "/api/v1/auth/api-keys",
+            get(routes::list_api_keys).post(routes::create_api_key),
+        )
+        .route("/api/v1/auth/api-keys/{id}", delete(routes::revoke_api_key))
 }
 
 pub(crate) fn rules_read() -> Router<AppState> {
@@ -478,7 +485,6 @@ pub(crate) fn users_write() -> Router<AppState> {
             "/api/v1/auth/users/{id}",
             put(routes::update_user).delete(routes::delete_user_handler),
         )
-        .route("/api/v1/auth/api-keys", post(routes::create_api_key))
         .route("/api/v1/auth/roles", post(routes::create_role))
         .route(
             "/api/v1/auth/roles/{id}",

@@ -3,6 +3,7 @@ name = "aifw-api"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [[bin]]
 name = "aifw-api"
@@ -62,6 +63,9 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 axum-test = "21"
+# CLI v2: integration tests drive real `aifw` commands against this router.
+aifw-cli = { path = "../aifw-cli" }
+toml = "0.9"
 async-trait = { workspace = true }
 
 [lints]

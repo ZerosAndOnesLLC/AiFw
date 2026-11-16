@@ -495,6 +495,10 @@ mod sudoers_tests {
                 "aifw-core log_rotation.rs newsyslog fragment (#205)",
                 aifw_core::log_rotation::CONF_PATH.into(),
             ),
+            (
+                "aifw-api updates.rs maintenance-window cron (MAINTENANCE_CRON_PATH)",
+                "/etc/cron.d/aifw-updates".into(),
+            ),
         ];
         for (site, path) in &targets {
             assert!(
@@ -523,10 +527,10 @@ mod sudoers_tests {
             ("aifw-api/src/dhcp.rs", 1),
             ("aifw-api/src/cluster.rs", 1),
             ("aifw-api/src/reverse_proxy.rs", 1),
-            ("aifw-cli/src/commands/reverse_proxy.rs", 1),
             ("aifw-core/src/pf_tuning.rs", 1),
             ("aifw-core/src/ipsec.rs", 1),
             ("aifw-core/src/log_rotation.rs", 1),
+            ("aifw-api/src/updates.rs", 1),
             // the definition itself
             ("aifw-core/src/sudo.rs", 0),
         ];

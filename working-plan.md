@@ -1,83 +1,87 @@
-# AiFw Plugin System Overhaul — Working Plan
+# AiFw CLI v2 — Working Plan
 
-Goal: make the plugin system genuinely work end to end (correct lifecycle,
-honest hooks, sandboxed actions, typed settings, real UI/CLI UX) and ship two
-reference plugins that double as the "how to write a plugin" example:
-**Threat Intel Feeds** (`threat-feeds`) and **Notifier** (`notifier`).
+Goal: make `aifw` a first-class client of the REST API (console admins, scripts,
+remote/fleet operators) with a small `aifw local` break-glass group for when the
+API is down. Full design: see the "CLI v2" section of docs/docs/cli.md once
+written; decisions below.
 
 Decisions:
-- Retire the no-op built-ins `ip-reputation`, `custom-logger`, `webhook-notifier`.
-- Native in-tree Rust plugins only — remove the WASM stub + manifest discovery
-  and the docs claims about them.
-- Keep only hooks that actually fire: Timer, LogEvent, ApiRequest, PostRule,
-  IdsAlert, VpnEvent, GatewayEvent (new). Connection hooks removed.
+- Phase 0 fixes + extends API keys before the CLI relies on them.
+- API-only for every resource command; direct DB/pf only under `aifw local`.
+- Named contexts (`~/.config/aifw/config.toml`, secrets 0600) + read-only fan-out.
+- Exit codes: 0 ok, 1 other, 2 usage, 3 401, 4 403, 5 404, 6 validation,
+  7 unreachable/TLS, 8 partial fan-out, 9 commit-confirm rolled back.
+- Back-compat callers stay green: maintenance cron `aifw update …`, aifw-console,
+  `cluster verify --json`, `update install --from`, `--version`, `reload`/`reconcile`.
 
-Workflow: one sub-phase at a time, `cargo check` zero warnings, commit after
-each phase, mark `[x]`. No version bump (release-time only).
-Branch: `feat/plugin-system` off `main`. Mack merges the PR.
+Workflow: one sub-phase at a time, `cargo check` zero warnings, tests added/updated
+for every change, commit after each phase, mark `[x]`. No version bump.
+Branch: `feat/cli-v2` off `main`. Mack merges the PR.
 
-## Phase 1 — Prune
-- [x] Delete wasm.rs, discovery.rs, examples/, `toml` dep, `/plugins/discover`
-- [x] Remove unfireable hooks/payloads/actions; remove connection hook block in ws.rs
-- [x] Retire old `plugin_config` rows; fix README/matrix/features/compare claims
-- [x] Shrink tests to manager/context with a local test plugin
+(Previous working plan — plugin system overhaul — is in git history; its two
+deferred items M5/L5 remain deferred.)
 
-## Phase 2 — Framework (aifw-plugins)
-- [x] Trait extensions: settings_schema, validate_settings, actions, run_action, status; shutdown(&self, ctx)
-- [x] schema.rs (SettingField/FieldKind + validate)
-- [x] registry.rs (single built-in list)
-- [x] store.rs (PluginStore: plugin_config + sealed secrets + plugin_kv migration)
-- [x] manager.rs rewrite (enable/disable keeps entry, Error state, hook mask, JoinSet+timeout dispatch, apply_actions, stats)
-- [x] context.rs per-plugin (log ring, namespaced KV, spawn, table ops, rules)
-- [x] error.rs variants + AifwError mapping; ALTER guard list
+## Phase 0 — API key prerequisites
+- [x] Bind created keys to the calling user (not `users LIMIT 1`); self-service create
+- [x] api_keys: role_id (subset of owner), expires_at, last_used_at via add_column_if_missing
+- [x] GET /auth/api-keys, DELETE /auth/api-keys/{id}; enforce expiry + subset per request
+- [x] Rate-limit POST /auth/totp/login
+- [x] Reserve `aifw-cli-local` key name. (Change: no `local-cli` role and no setup-time
+      provisioning — root already owns the box, so `aifw local cli-key` mints the root-only
+      /usr/local/etc/aifw/cli.key straight into the DB in phase 1.)
+- [x] Fix: delete_user removed the user row before its FK children → 500 for any user who
+      had ever logged in; now children first, in one transaction
+- [x] UI: Profile → API Keys card (create with role/expiry, show-once secret, revoke)
+- [x] Tests: binding, subset, deleted-role fail-closed, expiry, revoke, list scoping,
+      internal keys hidden, keys can't mint keys, last_used, user delete, totp rate limit
 
-## Phase 3 — API + pf anchor
-- [x] `aifw-api/src/plugins/` handlers with new endpoints + typed errors + audit
-- [x] Reconcile task (DB updated_at vs applied)
-- [x] `anchors::PLUGINS` at front of FILTER_HOOKS; rule rendering + validation
-- [x] `patch_pf_conf` pure fn for upgrades; list_system_rules; auto-snapshot skip
+## Phase 1 — aifw-client crate + CLI foundation
+- [x] aifw-client: Client, Auth (ApiKey/Session, prefix detection), ClientError, refresh rotation
+- [x] Pin verifier moved from aifw-core peer_tls (re-exported)
+- [x] `aifw local cli-key` + automatic first-use minting as root (aifw-cli-local key, cli.key 0600)
+- [x] CLI: contexts/credentials, login/logout/whoami/context, output (table/wide/json/yaml),
+      prompts, exit codes; aifw-cli is now lib + thin bin (`aifw_cli::run`)
+- [x] pending / apply / confirm (arm → change → apply → accept; `apply` fails on "Partial reload")
+- [x] Tests: aifw-client unit + mock-server tests; CLI unit tests; API-side integration
+      harness (tests/cli_harness.rs) running real commands against the real router
+- (moved to phase 2) Remove legacy HTTP helpers — they go with porting their command groups
 
-## Phase 4 — Event bridges
-- [x] RowTail helper; IdsAlert bridge
-- [x] GatewayEvent hook + bridge (multiwan_gateway_events, dedupe)
-- [x] VpnEvent bridge (WireGuard + IPsec diff)
-- [x] Timer gated on subscribers
+## Phase 2 — Port existing command groups to the API
+- [x] rules, nat, geoip, shaper, routes, dns, users (+ status/reload/interfaces via API;
+      ratelimit/reconcile/init + break-glass status/reload moved under commands/local —
+      no API for them; fixed: user PUT/DELETE rejected API keys, NAT hint misfire,
+      geoip import multi-file upload)
+- [x] vpn wg, ids, plugins, syslog, logrotate (vpn also covers ipsec tunnels — phase 3 item
+      done early; ids gains config/alerts/rulesets/rules/suppressions; fixed: API hid every
+      IDS suppression whose created_at used the column default)
+- [x] multiwan, cluster, reverse-proxy, dhcp (cluster verify --json contract kept; reverse-proxy
+      gets CRUD for all 11 collections; service endpoints that 200 with "failed" now exit 1;
+      log tails get --follow — phase 4 item done early)
+- [x] update (API; old updater kept as `aifw local update` for when the API is down), config
+      (API; plain-secret export only via `aifw local config-export`); compat test parses every
+      external caller's invocation
 
-## Phase 5 — Threat Intel Feeds plugin
-- [x] http.rs fetch_capped (net_safety, redirects, cap, ETag)
-- [x] Feed catalog + parsers + sanitize
-- [x] Plugin: settings, KV restore, refresh scheduling, rules, status, actions
+## Phase 3 — New coverage
+- [x] aliases, schedules, interfaces/vlans
+- [x] ipsec (phase 2b), acme/ddns, ca, time
+- [x] dns resolver/blocklists, backup/s3/smtp, settings, system (+ reboot/shutdown)
+- [x] roles/api-keys/oauth/totp/audit, connections/blocked/logs/metrics/about, ai
 
-## Phase 6 — Notifier plugin
-- [x] Channels: ntfy, Discord, Slack, generic webhook (HMAC), Telegram
-- [x] Classification, filters, limiter/dedupe, delivery task, retries
-- [x] Status + `test` action
+## Phase 4 — Streams and jobs
+- [x] logs --follow (poll), pending --watch (SSE), top, update os-upgrade --wait, long timeouts
+      (change: `top` polls /status + /metrics instead of the /ws WebSocket — no extra WS/TLS client)
 
-## Phase 7 — UI
-- [x] lib/api/plugins.ts, hooks/usePlugins.ts, hooks/usePlugin.ts, hooks/useAutoSave.ts
-- [x] PluginCard, PluginDrawer (Overview/Settings/Activity), SchemaForm/SchemaField/SecretField
-- [x] Threat feeds + notifier status widgets; states, gating, a11y
+## Phase 5 — Fleet fan-out
+- [x] --context a,b / --all-contexts (+ --parallel N) on read-only commands; per-context
+      sections or [{context, exit_code, result, error}] with -o json; exit 8 on partial
+      failure; writes refused
 
-## Phase 8 — Backup/export + CLI
-- [x] Config export/restore of plugin_config incl. secrets handling
-- [x] `aifw plugins list|show|enable|disable|set|reset`
+## Phase 6 — `aifw local` + DB-free guard
+- [x] Move break-glass to commands/local/ (status/reload/reconcile/init/ratelimit/update/
+      config-export/cli-key), guard test `only_local_touches_the_database_or_pf`, sudoers
+      write_file guard updated (done during phase 2)
 
-## Phase 9 — Docs
-- [x] docs/plugins.md "Build your first plugin" (threat-feeds walkthrough)
-- [x] features/cli/README/CLAUDE.md endpoint updates
-
-## Phase 10 — Review fixes (2026-10-07 + 2026-10-15 reviews)
-- [x] H1 rule validator escapes (negation, label smuggling, `nat-to(`, rtable/dnpipe/tag/#)
-- [x] M1/M2 config lock across read-modify-write; lifecycle detached from the request
-- [x] M3 outbound HTTP: resolve-and-pin, re-checked redirects, Telegram public-only
-- [x] M4 Threat Feeds pfctl/KV outside the state lock; UI batches feed toggles
-- [x] M6 VPN bridge reports vanished endpoints; L6 quiet IDS tail; M7 allowlist hint
-- [x] L1/L2/L3/L4/L7 load-error backoff, stopped-run writes refused, persisted table list, reset clears KV, restore validates
-- [x] M-A CLI status/logs/run via API, enable confirms, --secret-stdin
-- [x] M-B per-peer VPN notifications opt-in
-- [x] M-C Plugin/PluginInstance split, typed settings, hooks(settings)
-- [x] L-A stale old-system references; L-B honest sandbox wording; L-H hello-world + for_tests()
-- [x] L-D/L-E/L-F redundant enable no-op, partial Send test result, stable field focus
-- [x] L-G freebsd/tests/t11-plugins.sh
-- [ ] M5 PostRule dispatch off the pflog reader — deferred until a plugin subscribes
-- [ ] L5 IDS cursor across VACUUM — deferred (rare; re-anchor handles the common case)
+## Phase 7 — Docs and polish
+- [x] docs/docs/cli.md rewrite, AIFW_TOKEN docs (ha.md, plugins.md), README, CLAUDE.md,
+      `aifw completions <shell>` + `aifw man`; ISO build and deploy.sh install them
+      (update tarballs carry binaries only — existing boxes can run `aifw completions`)

@@ -158,6 +158,11 @@ for bin in $BINS; do
     cp "target/release/$bin" "$BIN_DIR/$bin"
     chmod 755 "$BIN_DIR/$bin"
 done
+# aifw CLI man page + shell completions (generated from the binary)
+mkdir -p /usr/local/share/man/man1 /usr/local/share/bash-completion/completions /usr/local/share/zsh/site-functions
+"$BIN_DIR/aifw" man | gzip -9 > /usr/local/share/man/man1/aifw.1.gz || echo "WARNING: aifw man page not generated"
+"$BIN_DIR/aifw" completions bash > /usr/local/share/bash-completion/completions/aifw || true
+"$BIN_DIR/aifw" completions zsh > /usr/local/share/zsh/site-functions/_aifw || true
 # Copy TrafficCop binary
 if [ -f "$TRAFFICCOP_DIR/target/release/trafficcop" ]; then
     cp "$TRAFFICCOP_DIR/target/release/trafficcop" "$BIN_DIR/trafficcop"

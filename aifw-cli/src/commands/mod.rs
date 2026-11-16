@@ -1,44 +1,39 @@
 //! CLI command implementations, one module per `aifw <group>` (#190).
-//! Everything public is re-exported so `main.rs` keeps calling
-//! `commands::<fn>`.
+//! Each group is a clap enum plus `run()`, reached by module path
+//! (`commands::rules::run`). Only `local` touches the database or pf.
 
-mod cluster;
-mod common;
-mod config;
-mod dhcp;
-mod dns;
-mod geoip;
-mod ids;
-mod interfaces;
-mod logging;
-mod multiwan;
-mod nat;
-mod plugins;
-mod reverse_proxy;
-mod routes;
-mod rules;
-mod shaping;
-mod system;
-mod updates;
-mod users;
-mod vpn;
-
-pub use cluster::*;
-pub use config::*;
-pub use dhcp::*;
-pub use dns::*;
-pub use geoip::*;
-pub use ids::*;
-pub use interfaces::*;
-pub use logging::*;
-pub use multiwan::*;
-pub use nat::*;
-pub use plugins::*;
-pub use reverse_proxy::*;
-pub use routes::*;
-pub use rules::*;
-pub use shaping::*;
-pub use system::*;
-pub use updates::*;
-pub use users::*;
-pub use vpn::*;
+pub mod ai;
+pub mod api_keys;
+pub mod backup;
+pub mod certs;
+pub mod cluster;
+pub mod config;
+pub mod context;
+pub mod dhcp;
+pub mod dns;
+pub mod geoip;
+pub mod identity;
+pub mod ids;
+pub mod interfaces;
+pub mod local;
+pub mod logging;
+pub mod logs;
+pub mod multiwan;
+pub mod nat;
+pub mod objects;
+pub mod ops;
+pub mod plugins;
+pub mod resource;
+pub mod reverse_proxy;
+pub mod routes;
+pub mod rules;
+pub mod session;
+pub mod settings;
+pub mod shaping;
+pub mod staging;
+pub mod system;
+pub mod system_cfg;
+pub mod time;
+pub mod updates;
+pub mod users;
+pub mod vpn;

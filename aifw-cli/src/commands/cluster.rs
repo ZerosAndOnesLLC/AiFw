@@ -1,405 +1,560 @@
-//! `aifw cluster …` — talks to the local API (needs a token) rather than the DB.
+//! `aifw cluster …` — HA: CARP VIPs, pfsync, nodes, health checks,
+//! promote/demote/maintenance, and `verify` (local kernel checks + the API
+//! view; `--json` output is the contract `scripts/ha-verify.sh` parses).
 
-// ============================================================
-// Cluster / HA commands — loopback HTTP client helpers
-// ============================================================
+use clap::Subcommand;
+use serde_json::{Value, json};
 
-/// Base URL for the local AiFw API.
-/// Uses HTTP on loopback (TLS termination is handled by the appliance's
-/// reverse proxy on the public interface; loopback is trusted).
-pub(super) const AIFW_API_BASE: &str = "http://127.0.0.1:8080";
-// Note: DEFAULT_LOOPBACK_API_BASE is HTTPS (for daemon-to-daemon use with
-// self-signed cert acceptance). CLI uses plain HTTP on loopback since it
-// runs interactively on the appliance itself.
+use crate::cli::exit::CliError;
+use crate::cli::output::Col;
+use crate::cli::{Ctx, Format, col, prompt, wide};
 
-/// Returns the bearer token for authenticating to the local API.
-///
-/// Resolution order:
-///   1. `AIFW_TOKEN` env var (preferred for interactive shells / scripts)
-///   2. `/var/db/aifw/cli.token` (reserved for future per-host token provisioning;
-///      nothing currently writes this file — see #225 / #217 for follow-up)
-///
-/// Returns empty string if neither source is available; protected endpoints
-/// will respond 401 in that case.
-pub(super) fn read_api_token() -> String {
-    if let Ok(t) = std::env::var("AIFW_TOKEN")
-        && !t.is_empty()
-    {
-        return t;
-    }
-    std::fs::read_to_string("/var/db/aifw/cli.token")
-        .unwrap_or_default()
-        .trim()
-        .to_string()
+#[derive(Debug, Subcommand)]
+pub enum ClusterCmd {
+    /// This node's cluster status
+    Status {
+        #[arg(long, hide = true)]
+        json: bool,
+    },
+    /// CARP virtual IPs
+    #[command(subcommand)]
+    Carp(CarpCmd),
+    /// pfsync configuration
+    #[command(subcommand)]
+    Pfsync(PfsyncCmd),
+    /// Cluster nodes
+    #[command(subcommand)]
+    Nodes(NodesCmd),
+    /// Health checks
+    #[command(subcommand)]
+    Health(HealthCmd),
+    /// Clear this node's operator demotion and maintenance mode; with
+    /// preemption on, it retakes MASTER if its advskew beats the peer's
+    Promote,
+    /// Demote this node so the peer takes the VIPs (until promote or reboot)
+    Demote {
+        #[arg(short, long)]
+        yes: bool,
+    },
+    /// Persistent CARP maintenance mode (survives reboot)
+    Maintenance {
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
+    },
+    /// Force a snapshot pull from peer
+    Sync,
+    /// Peer and replication state as seen from this node
+    PeerState,
+    /// Recent CARP role changes
+    FailoverHistory,
+    /// Run local-side verification checks. Exits 0 on healthy, non-zero on failure.
+    Verify {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
-/// Base URL of the local API: `AIFW_API_URL`, else the appliance loopback
-/// (`https://127.0.0.1:8080`). The API serves HTTPS; the old plain-HTTP
-/// default never connected (#712).
-fn api_base() -> String {
-    std::env::var("AIFW_API_URL")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| aifw_common::DEFAULT_LOOPBACK_API_BASE.to_string())
+#[derive(Debug, Subcommand)]
+pub enum CarpCmd {
+    /// List CARP VIPs
+    #[command(visible_alias = "ls")]
+    List,
+    /// Show a single CARP VIP
+    Show { id: String },
+    /// Create a CARP VIP
+    Add {
+        #[arg(long)]
+        vhid: u8,
+        #[arg(long)]
+        interface: String,
+        /// Virtual IP in addr/prefix form, e.g. 192.0.2.1/24
+        #[arg(long)]
+        vip: String,
+        /// Shared CARP password (prefer --password-stdin)
+        #[arg(
+            long,
+            required_unless_present = "password_stdin",
+            conflicts_with = "password_stdin"
+        )]
+        password: Option<String>,
+        /// Read the CARP password from stdin
+        #[arg(long)]
+        password_stdin: bool,
+    },
+    /// Remove a CARP VIP
+    #[command(visible_alias = "rm")]
+    Remove {
+        id: String,
+        #[arg(short, long)]
+        yes: bool,
+    },
 }
 
-/// Path of the daemon loopback key (root:aifw 0640) — a `system` identity
-/// with `ha:manage`, so `aifw cluster …` works as root out of the box.
-const LOOPBACK_KEY_PATH: &str = "/usr/local/etc/aifw/daemon.key";
-
-/// `Authorization` header value for the local API.
-///
-/// Resolution order:
-///   1. `AIFW_TOKEN` env var → `Bearer <token>` (a user's JWT)
-///   2. the daemon loopback key → `ApiKey <key>` (readable by root)
-pub(super) fn auth_header() -> Option<String> {
-    if let Ok(t) = std::env::var("AIFW_TOKEN")
-        && !t.is_empty()
-    {
-        return Some(format!("Bearer {t}"));
-    }
-    std::fs::read_to_string(LOOPBACK_KEY_PATH)
-        .ok()
-        .map(|k| k.trim().to_string())
-        .filter(|k| !k.is_empty())
-        .map(|k| format!("ApiKey {k}"))
+#[derive(Debug, Subcommand)]
+pub enum PfsyncCmd {
+    /// Get pfsync configuration
+    Get,
+    /// Set pfsync configuration
+    Set {
+        #[arg(long)]
+        sync_interface: String,
+        #[arg(long)]
+        sync_peer: Option<String>,
+        /// Defer packets until the peer acknowledges the state (true/false)
+        #[arg(long, num_args = 0..=1, default_value = "true", default_missing_value = "true")]
+        defer: bool,
+        /// conservative, tight, aggressive
+        #[arg(long, default_value = "conservative")]
+        latency_profile: String,
+        #[arg(long, num_args = 0..=1, default_value = "false", default_missing_value = "true")]
+        dhcp_link: bool,
+        /// Legacy (#486), ignored: since #712 WireGuard always follows the CARP role
+        #[arg(long, hide = true, num_args = 0..=1, default_value = "false", default_missing_value = "true")]
+        wg_deconfigure_on_backup: bool,
+    },
 }
 
-fn api_client() -> anyhow::Result<reqwest::Client> {
-    let timeout = std::time::Duration::from_secs(10);
-    if api_base().starts_with("https://") {
-        // Pinned to the certificate the local API serves (#317).
-        return Ok(aifw_core::peer_tls::LocalApiClient::new(timeout).get()?);
-    }
-    Ok(reqwest::Client::builder().timeout(timeout).build()?)
+#[derive(Debug, Subcommand)]
+pub enum NodesCmd {
+    /// List cluster nodes
+    #[command(visible_alias = "ls")]
+    List,
+    /// Show a cluster node
+    Show { id: String },
+    /// Add a cluster node
+    Add {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        address: String,
+        /// Node role: primary, secondary, or standalone
+        #[arg(long, default_value = "secondary")]
+        role: String,
+        /// Port the peer's API listens on (default 8080)
+        #[arg(long)]
+        api_port: Option<u16>,
+    },
+    /// Remove a cluster node
+    #[command(visible_alias = "rm")]
+    Remove {
+        id: String,
+        #[arg(short, long)]
+        yes: bool,
+    },
+    /// Reset (or set) the pinned TLS certificate fingerprint of a peer.
+    /// Without --fingerprint the pin is cleared and re-learned on next contact.
+    Repin {
+        id: String,
+        /// SHA-256 fingerprint of the peer's certificate (64 hex chars, colons ok)
+        #[arg(long)]
+        fingerprint: Option<String>,
+    },
 }
 
-fn authed(req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-    match auth_header() {
-        Some(h) => req.header("Authorization", h),
-        None => req,
-    }
+#[derive(Debug, Subcommand)]
+pub enum HealthCmd {
+    /// List health checks
+    #[command(visible_alias = "ls")]
+    List,
+    /// Add a health check
+    Add {
+        #[arg(long)]
+        name: String,
+        /// Check type: ping, tcp_port, http_get, pf_status
+        #[arg(long)]
+        check_type: String,
+        #[arg(long)]
+        target: String,
+        #[arg(long, default_value_t = 10)]
+        interval_secs: u32,
+    },
+    /// Remove a health check
+    #[command(visible_alias = "rm")]
+    Remove {
+        id: String,
+        #[arg(short, long)]
+        yes: bool,
+    },
+    /// Trigger an immediate probe of all enabled health checks
+    Run,
 }
 
-async fn api_get(path: &str) -> anyhow::Result<serde_json::Value> {
-    let url = format!("{}{path}", api_base());
-    let resp = authed(api_client()?.get(&url)).send().await?;
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        anyhow::bail!("GET {path} returned {status}: {body}");
-    }
-    Ok(resp.json().await?)
+const CARP_COLS: &[Col] = &[
+    col("ID", "/id"),
+    col("VHID", "/vhid"),
+    col("VIP", "/_vip"),
+    col("IFACE", "/interface"),
+    col("STATUS", "/status"),
+    wide("ADVSKEW", "/advskew"),
+];
+const NODE_COLS: &[Col] = &[
+    col("ID", "/id"),
+    col("NAME", "/name"),
+    col("ADDRESS", "/address"),
+    col("ROLE", "/role"),
+    col("HEALTH", "/health"),
+    col("LAST SEEN", "/last_seen"),
+    wide("VERSION", "/software_version"),
+    wide("API PORT", "/api_port"),
+    wide("PIN", "/cert_fingerprint"),
+];
+const HEALTH_COLS: &[Col] = &[
+    col("ID", "/id"),
+    col("NAME", "/name"),
+    col("TYPE", "/check_type"),
+    col("TARGET", "/target"),
+    col("INTERVAL", "/interval_secs"),
+    col("ENABLED", "/enabled"),
+];
+
+fn carp_row(c: &Value) -> Value {
+    let mut r = c.clone();
+    r["_vip"] = json!(format!(
+        "{}/{}",
+        c["virtual_ip"].as_str().unwrap_or("?"),
+        c["prefix"]
+    ));
+    r
 }
 
-async fn api_post(path: &str, body: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
-    let url = format!("{}{path}", api_base());
-    let resp = authed(api_client()?.post(&url).json(body)).send().await?;
-    let status = resp.status();
-    if !status.is_success() {
-        let body_text = resp.text().await.unwrap_or_default();
-        anyhow::bail!("POST {path} returned {status}: {body_text}");
-    }
-    // Some POST endpoints return 204 No Content
-    if status == reqwest::StatusCode::NO_CONTENT {
-        return Ok(serde_json::Value::Null);
-    }
-    Ok(resp.json().await.unwrap_or(serde_json::Value::Null))
-}
-
-async fn api_put(path: &str, body: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
-    let url = format!("{}{path}", api_base());
-    let resp = authed(api_client()?.put(&url).json(body)).send().await?;
-    let status = resp.status();
-    if !status.is_success() {
-        let body_text = resp.text().await.unwrap_or_default();
-        anyhow::bail!("PUT {path} returned {status}: {body_text}");
-    }
-    if status == reqwest::StatusCode::NO_CONTENT {
-        return Ok(serde_json::Value::Null);
-    }
-    Ok(resp.json().await.unwrap_or(serde_json::Value::Null))
-}
-
-async fn api_delete(path: &str) -> anyhow::Result<()> {
-    let url = format!("{}{path}", api_base());
-    let resp = authed(api_client()?.delete(&url)).send().await?;
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        anyhow::bail!("DELETE {path} returned {status}: {body}");
-    }
-    Ok(())
-}
-
-// ---- cluster status ----
-
-pub async fn cluster_status(json: bool) -> anyhow::Result<()> {
-    let s: serde_json::Value = api_get("/api/v1/cluster/status").await?;
-    if json {
-        println!("{}", serde_json::to_string_pretty(&s)?);
-    } else {
-        println!(
-            "Role:                 {}",
-            s["role"].as_str().unwrap_or("?")
-        );
-        println!("Peer reachable:       {}", s["peer_reachable"]);
-        println!("pfsync state count:   {}", s["pfsync_state_count"]);
-        if let Some(h) = s["last_snapshot_hash"].as_str() {
-            println!("Last snapshot hash:   {h}");
+pub async fn run(ctx: &mut Ctx, cmd: ClusterCmd) -> anyhow::Result<()> {
+    let client = ctx.client()?;
+    match cmd {
+        ClusterCmd::Status { json } => {
+            if json {
+                ctx.force_format(Format::Json);
+            }
+            let s = client.get("/cluster/status").await?;
+            if ctx.format().is_structured() {
+                return ctx.raw(&s);
+            }
+            let mut v = s.clone();
+            v["_reasons"] = s["demotion"]["reasons"].clone();
+            ctx.detail(
+                &v,
+                &[
+                    ("Role", "/role"),
+                    ("Configured role", "/configured_role"),
+                    ("Peer reachable", "/peer_reachable"),
+                    ("Split brain", "/split_brain"),
+                    ("pfsync state count", "/pfsync_state_count"),
+                    ("Last snapshot hash", "/last_snapshot_hash"),
+                    ("Maintenance", "/demotion/maintenance"),
+                    ("Demotion level", "/demotion/level"),
+                    ("Demotion reasons", "/_reasons"),
+                ],
+            )?;
+            if let Some(w) = s["warnings"].as_array().filter(|w| !w.is_empty()) {
+                for x in w {
+                    ctx.io
+                        .eprintln(&format!("warning: {}", x.as_str().unwrap_or_default()));
+                }
+            }
+            Ok(())
         }
-    }
-    Ok(())
-}
-
-// ---- CARP ----
-
-pub async fn cluster_carp_list() -> anyhow::Result<()> {
-    let v: serde_json::Value = api_get("/api/v1/cluster/carp").await?;
-    println!("{}", serde_json::to_string_pretty(&v)?);
-    Ok(())
-}
-
-pub async fn cluster_carp_show(id: &str) -> anyhow::Result<()> {
-    let v: serde_json::Value = api_get(&format!("/api/v1/cluster/carp/{id}")).await?;
-    println!("{}", serde_json::to_string_pretty(&v)?);
-    Ok(())
-}
-
-pub async fn cluster_carp_add(
-    vhid: u8,
-    interface: &str,
-    vip: &str,
-    password: &str,
-) -> anyhow::Result<()> {
-    let (ip_str, prefix_str) = vip
-        .split_once('/')
-        .ok_or_else(|| anyhow::anyhow!("--vip must be in 'addr/prefix' form, e.g. 192.0.2.1/24"))?;
-    let virtual_ip: std::net::IpAddr = ip_str
-        .parse()
-        .map_err(|e| anyhow::anyhow!("invalid IP {ip_str}: {e}"))?;
-    let prefix: u8 = prefix_str
-        .parse()
-        .map_err(|e| anyhow::anyhow!("invalid prefix {prefix_str}: {e}"))?;
-    let body = serde_json::json!({
-        "vhid": vhid,
-        "virtual_ip": virtual_ip,
-        "prefix": prefix,
-        "interface": interface,
-        "password": password,
-    });
-    let v: serde_json::Value = api_post("/api/v1/cluster/carp", &body).await?;
-    println!("{}", serde_json::to_string_pretty(&v)?);
-    Ok(())
-}
-
-pub async fn cluster_carp_remove(id: &str) -> anyhow::Result<()> {
-    api_delete(&format!("/api/v1/cluster/carp/{id}")).await?;
-    println!("Removed CARP VIP {id}");
-    Ok(())
-}
-
-// ---- pfsync ----
-
-pub async fn cluster_pfsync_get() -> anyhow::Result<()> {
-    let v: serde_json::Value = api_get("/api/v1/cluster/pfsync").await?;
-    println!("{}", serde_json::to_string_pretty(&v)?);
-    Ok(())
-}
-
-pub async fn cluster_pfsync_set(
-    sync_interface: &str,
-    sync_peer: Option<&str>,
-    defer: bool,
-    latency_profile: &str,
-    dhcp_link: bool,
-    wg_deconfigure_on_backup: bool,
-) -> anyhow::Result<()> {
-    let body = serde_json::json!({
-        "sync_interface": sync_interface,
-        "sync_peer": sync_peer,
-        "defer": defer,
-        "enabled": true,
-        "latency_profile": latency_profile,
-        "heartbeat_iface": null,
-        "heartbeat_interval_ms": null,
-        "dhcp_link": dhcp_link,
-        "wg_deconfigure_on_backup": wg_deconfigure_on_backup,
-    });
-    let v: serde_json::Value = api_put("/api/v1/cluster/pfsync", &body).await?;
-    println!("{}", serde_json::to_string_pretty(&v)?);
-    Ok(())
-}
-
-// ---- nodes ----
-
-pub async fn cluster_nodes_list() -> anyhow::Result<()> {
-    let v: serde_json::Value = api_get("/api/v1/cluster/nodes").await?;
-    println!("{}", serde_json::to_string_pretty(&v)?);
-    Ok(())
-}
-
-pub async fn cluster_nodes_show(id: &str) -> anyhow::Result<()> {
-    let v: serde_json::Value = api_get(&format!("/api/v1/cluster/nodes/{id}")).await?;
-    println!("{}", serde_json::to_string_pretty(&v)?);
-    Ok(())
-}
-
-pub async fn cluster_nodes_add(
-    name: &str,
-    address: &str,
-    role: &str,
-    api_port: Option<u16>,
-) -> anyhow::Result<()> {
-    let mut body = serde_json::json!({ "name": name, "address": address, "role": role });
-    if let Some(p) = api_port {
-        body["api_port"] = serde_json::json!(p);
-    }
-    let v: serde_json::Value = api_post("/api/v1/cluster/nodes", &body).await?;
-    println!("{}", serde_json::to_string_pretty(&v)?);
-    Ok(())
-}
-
-pub async fn cluster_nodes_repin(id: &str, fingerprint: Option<&str>) -> anyhow::Result<()> {
-    let body = match fingerprint {
-        Some(fp) => serde_json::json!({ "fingerprint": fp }),
-        None => serde_json::json!({}),
-    };
-    let v: serde_json::Value =
-        api_post(&format!("/api/v1/cluster/nodes/{id}/repin"), &body).await?;
-    match v.get("cert_fingerprint").and_then(|f| f.as_str()) {
-        Some(fp) => println!("Node {id} pinned to {fp}"),
-        None => println!("Node {id} pin cleared — it will be re-learned on the next contact."),
-    }
-    Ok(())
-}
-
-pub async fn cluster_nodes_remove(id: &str) -> anyhow::Result<()> {
-    api_delete(&format!("/api/v1/cluster/nodes/{id}")).await?;
-    println!("Removed node {id}");
-    Ok(())
-}
-
-// ---- health checks ----
-
-pub async fn cluster_health_list() -> anyhow::Result<()> {
-    let v: serde_json::Value = api_get("/api/v1/cluster/health").await?;
-    println!("{}", serde_json::to_string_pretty(&v)?);
-    Ok(())
-}
-
-pub async fn cluster_health_add(
-    name: &str,
-    check_type: &str,
-    target: &str,
-    interval_secs: u32,
-) -> anyhow::Result<()> {
-    let body = serde_json::json!({
-        "name": name,
-        "check_type": check_type,
-        "target": target,
-        "interval_secs": interval_secs,
-    });
-    let v: serde_json::Value = api_post("/api/v1/cluster/health", &body).await?;
-    println!("{}", serde_json::to_string_pretty(&v)?);
-    Ok(())
-}
-
-pub async fn cluster_health_remove(id: &str) -> anyhow::Result<()> {
-    api_delete(&format!("/api/v1/cluster/health/{id}")).await?;
-    println!("Removed health check {id}");
-    Ok(())
-}
-
-pub async fn cluster_health_run() -> anyhow::Result<()> {
-    let results = api_post("/api/v1/cluster/health/run", &serde_json::json!({})).await?;
-    let rows = results.as_array().cloned().unwrap_or_default();
-    if rows.is_empty() {
-        println!("No enabled health checks.");
-    }
-    let mut failed = 0;
-    for r in &rows {
-        let ok = r["healthy"].as_bool().unwrap_or(false);
-        if !ok {
-            failed += 1;
+        ClusterCmd::Carp(c) => match c {
+            CarpCmd::List => {
+                let v = client.get("/cluster/carp").await?;
+                ctx.list_mapped(&v, CARP_COLS, carp_row)
+            }
+            CarpCmd::Show { id } => ctx.raw(&client.get(&format!("/cluster/carp/{id}")).await?),
+            CarpCmd::Add {
+                vhid,
+                interface,
+                vip,
+                password,
+                password_stdin,
+            } => {
+                let (ip, prefix) = vip.split_once('/').ok_or_else(|| {
+                    CliError::Usage("--vip must be in 'addr/prefix' form, e.g. 192.0.2.1/24".into())
+                })?;
+                let ip: std::net::IpAddr = ip
+                    .parse()
+                    .map_err(|e| CliError::Usage(format!("invalid IP {ip}: {e}")))?;
+                let prefix: u8 = prefix
+                    .parse()
+                    .map_err(|e| CliError::Usage(format!("invalid prefix {prefix}: {e}")))?;
+                let password = match (password, password_stdin) {
+                    (Some(p), _) => p,
+                    (None, true) => prompt::read_line_raw(&mut ctx.io)?.trim().to_string(),
+                    (None, false) => String::new(),
+                };
+                if password.is_empty() {
+                    return Err(CliError::Usage("a CARP password is required".into()).into());
+                }
+                let v = client
+                    .post(
+                        "/cluster/carp",
+                        &json!({ "vhid": vhid, "virtual_ip": ip, "prefix": prefix, "interface": interface, "password": password }),
+                    )
+                    .await?;
+                if let Some(w) = v["warning"].as_str() {
+                    ctx.io.eprintln(&format!("warning: {w}"));
+                }
+                if ctx.format().is_structured() {
+                    return ctx.raw(&v);
+                }
+                ctx.io.println(&format!(
+                    "Added CARP VIP {} (vhid {vhid})",
+                    v["id"].as_str().unwrap_or("?")
+                ));
+                Ok(())
+            }
+            CarpCmd::Remove { id, yes } => {
+                ctx.confirm(&format!("Remove CARP VIP {id}?"), yes)?;
+                client.delete(&format!("/cluster/carp/{id}")).await?;
+                ctx.message(&Value::Null, &format!("Removed CARP VIP {id}"))
+            }
+        },
+        ClusterCmd::Pfsync(p) => match p {
+            PfsyncCmd::Get => {
+                let v = client.get("/cluster/pfsync").await?;
+                if v.is_null() && !ctx.format().is_structured() {
+                    ctx.io.println("pfsync is not configured.");
+                    return Ok(());
+                }
+                ctx.raw(&v)
+            }
+            PfsyncCmd::Set {
+                sync_interface,
+                sync_peer,
+                defer,
+                latency_profile,
+                dhcp_link,
+                wg_deconfigure_on_backup,
+            } => {
+                let v = client
+                    .put(
+                        "/cluster/pfsync",
+                        &json!({
+                            "sync_interface": sync_interface,
+                            "sync_peer": sync_peer,
+                            "defer": defer,
+                            "enabled": true,
+                            "latency_profile": latency_profile,
+                            "heartbeat_iface": null,
+                            "heartbeat_interval_ms": null,
+                            "dhcp_link": dhcp_link,
+                            "wg_deconfigure_on_backup": wg_deconfigure_on_backup,
+                        }),
+                    )
+                    .await?;
+                ctx.raw(&v)
+            }
+        },
+        ClusterCmd::Nodes(n) => match n {
+            NodesCmd::List => {
+                let v = client.get("/cluster/nodes").await?;
+                ctx.list(&v, NODE_COLS)
+            }
+            NodesCmd::Show { id } => ctx.raw(&client.get(&format!("/cluster/nodes/{id}")).await?),
+            NodesCmd::Add {
+                name,
+                address,
+                role,
+                api_port,
+            } => {
+                let mut body = json!({ "name": name, "address": address, "role": role });
+                if let Some(p) = api_port {
+                    body["api_port"] = json!(p);
+                }
+                let v = client.post("/cluster/nodes", &body).await?;
+                if ctx.format().is_structured() {
+                    return ctx.raw(&v);
+                }
+                ctx.io.println(&format!(
+                    "Added node {} ({})",
+                    v["name"].as_str().unwrap_or("?"),
+                    v["id"].as_str().unwrap_or("?")
+                ));
+                Ok(())
+            }
+            NodesCmd::Remove { id, yes } => {
+                ctx.confirm(&format!("Remove cluster node {id}?"), yes)?;
+                client.delete(&format!("/cluster/nodes/{id}")).await?;
+                ctx.message(&Value::Null, &format!("Removed node {id}"))
+            }
+            NodesCmd::Repin { id, fingerprint } => {
+                let body = match fingerprint {
+                    Some(fp) => json!({ "fingerprint": crate::cli::parse::fingerprint(&fp)? }),
+                    None => json!({}),
+                };
+                let v = client
+                    .post(&format!("/cluster/nodes/{id}/repin"), &body)
+                    .await?;
+                if ctx.format().is_structured() {
+                    return ctx.raw(&v);
+                }
+                match v.get("cert_fingerprint").and_then(Value::as_str) {
+                    Some(fp) => ctx.io.println(&format!("Node {id} pinned to {fp}")),
+                    None => ctx.io.println(&format!(
+                        "Node {id} pin cleared — it will be re-learned on the next contact."
+                    )),
+                }
+                Ok(())
+            }
+        },
+        ClusterCmd::Health(h) => match h {
+            HealthCmd::List => {
+                let v = client.get("/cluster/health").await?;
+                ctx.list(&v, HEALTH_COLS)
+            }
+            HealthCmd::Add {
+                name,
+                check_type,
+                target,
+                interval_secs,
+            } => {
+                let v = client
+                    .post(
+                        "/cluster/health",
+                        &json!({ "name": name, "check_type": check_type, "target": target, "interval_secs": interval_secs }),
+                    )
+                    .await?;
+                if ctx.format().is_structured() {
+                    return ctx.raw(&v);
+                }
+                ctx.io.println(&format!(
+                    "Added health check {}",
+                    v["id"].as_str().unwrap_or("?")
+                ));
+                Ok(())
+            }
+            HealthCmd::Remove { id, yes } => {
+                ctx.confirm(&format!("Remove health check {id}?"), yes)?;
+                client.delete(&format!("/cluster/health/{id}")).await?;
+                ctx.message(&Value::Null, &format!("Removed health check {id}"))
+            }
+            HealthCmd::Run => {
+                let timeout = ctx.slow_timeout(std::time::Duration::from_secs(120));
+                let results = client
+                    .request_with_timeout(
+                        reqwest::Method::POST,
+                        "/cluster/health/run",
+                        Some(&json!({})),
+                        timeout,
+                    )
+                    .await?;
+                let rows = crate::cli::output::rows(&results);
+                let failed = rows
+                    .iter()
+                    .filter(|r| r["healthy"].as_bool() != Some(true))
+                    .count();
+                if ctx.format().is_structured() {
+                    ctx.raw(&results)?;
+                } else if rows.is_empty() {
+                    ctx.io.println("No enabled health checks.");
+                } else {
+                    let mapped: Vec<Value> = rows
+                        .iter()
+                        .map(|r| {
+                            let mut x = (*r).clone();
+                            x["_ok"] = json!(if r["healthy"].as_bool() == Some(true) {
+                                "OK"
+                            } else {
+                                "FAIL"
+                            });
+                            x
+                        })
+                        .collect();
+                    let t = crate::cli::output::table(
+                        &mapped.iter().collect::<Vec<_>>(),
+                        &[
+                            col("RESULT", "/_ok"),
+                            col("NAME", "/name"),
+                            col("TYPE", "/check_type"),
+                            col("TARGET", "/target"),
+                        ],
+                        ctx.format(),
+                    );
+                    ctx.io.println(&t);
+                }
+                if failed > 0 {
+                    return Err(
+                        CliError::CheckFailed(format!("{failed} health check(s) failing")).into(),
+                    );
+                }
+                Ok(())
+            }
+        },
+        ClusterCmd::Promote => {
+            client.post_empty("/cluster/promote").await?;
+            ctx.message(
+                &Value::Null,
+                "Operator demotion and maintenance mode cleared",
+            )
         }
-        println!(
-            "{:4}  {:<24} {:<16} {}",
-            if ok { "OK" } else { "FAIL" },
-            r["name"].as_str().unwrap_or(""),
-            r["check_type"].as_str().unwrap_or(""),
-            r["target"].as_str().unwrap_or("")
-        );
+        ClusterCmd::Demote { yes } => {
+            ctx.confirm("Demote this node so the peer takes the VIPs?", yes)?;
+            client.post_empty("/cluster/demote").await?;
+            ctx.message(
+                &Value::Null,
+                "Demoted — the peer takes the VIPs; `aifw cluster promote` undoes it",
+            )
+        }
+        ClusterCmd::Maintenance { state } => {
+            let on = state == "on";
+            client
+                .put("/cluster/maintenance", &json!({ "enabled": on }))
+                .await?;
+            ctx.message(
+                &Value::Null,
+                if on {
+                    "Maintenance mode on — this node stays BACKUP, across reboots, until turned off"
+                } else {
+                    "Maintenance mode off"
+                },
+            )
+        }
+        ClusterCmd::Sync => {
+            let timeout = ctx.slow_timeout(std::time::Duration::from_secs(120));
+            client
+                .request_with_timeout(
+                    reqwest::Method::POST,
+                    "/cluster/snapshot/force",
+                    Some(&json!({})),
+                    timeout,
+                )
+                .await?;
+            ctx.message(&Value::Null, "Snapshot pulled from peer")
+        }
+        ClusterCmd::PeerState => ctx.raw(&client.get("/cluster/peer-state").await?),
+        ClusterCmd::FailoverHistory => {
+            let v = client.get("/cluster/failover-history").await?;
+            ctx.raw(&v)
+        }
+        ClusterCmd::Verify { json } => verify(ctx, &client, json).await,
     }
-    if failed > 0 {
-        anyhow::bail!("{failed} health check(s) failing");
-    }
-    Ok(())
 }
 
-// ---- promote / demote / sync ----
-
-pub async fn cluster_promote() -> anyhow::Result<()> {
-    api_post("/api/v1/cluster/promote", &serde_json::json!({})).await?;
-    println!("Operator demotion and maintenance mode cleared");
-    Ok(())
-}
-
-pub async fn cluster_demote() -> anyhow::Result<()> {
-    api_post("/api/v1/cluster/demote", &serde_json::json!({})).await?;
-    println!("Demoted — the peer takes the VIPs; `aifw cluster promote` undoes it");
-    Ok(())
-}
-
-pub async fn cluster_maintenance(on: bool) -> anyhow::Result<()> {
-    api_put(
-        "/api/v1/cluster/maintenance",
-        &serde_json::json!({ "enabled": on }),
-    )
-    .await?;
-    if on {
-        println!("Maintenance mode on — this node stays BACKUP, across reboots, until turned off");
-    } else {
-        println!("Maintenance mode off");
-    }
-    Ok(())
-}
-
-pub async fn cluster_sync() -> anyhow::Result<()> {
-    api_post("/api/v1/cluster/snapshot/force", &serde_json::json!({})).await?;
-    println!("Snapshot pulled from peer");
-    Ok(())
-}
-
-// ---- verify ----
-
-/// Run local-side cluster verification checks.
-/// Exits 0 when healthy, 1 on any failure.
-/// Designed to be called by scripts/ha-verify.sh (Commit 11 / #223).
-pub async fn cluster_verify(as_json: bool) -> anyhow::Result<()> {
-    let failures = verify_failures().await;
-    let status: serde_json::Value = api_get("/api/v1/cluster/status")
-        .await
-        .unwrap_or(serde_json::Value::Null);
-    if as_json {
-        let body = serde_json::json!({
+/// `cluster verify`: `--json` prints exactly `{ok, failures, status}` on
+/// stdout (one document; scripts/ha-verify.sh parses it) and the command
+/// exits non-zero on any failure.
+async fn verify(ctx: &mut Ctx, client: &aifw_client::Client, as_json: bool) -> anyhow::Result<()> {
+    // Kernel checks look at *this* machine: run them only when the target
+    // is this appliance; a remote target (--context fw2, fan-out) gets the
+    // API-side checks, and `scope` says which ran.
+    let local = crate::cli::onbox::is_loopback(&ctx.target()?.url);
+    let failures = verify_failures(client, local).await;
+    let status = client.get("/cluster/status").await.unwrap_or(Value::Null);
+    if as_json || ctx.format().is_structured() {
+        ctx.raw(&json!({
             "ok": failures.is_empty(),
             "failures": failures,
             "status": status,
-        });
-        println!("{}", serde_json::to_string_pretty(&body)?);
+            "scope": if local { "local" } else { "api-only" },
+        }))?;
     } else if failures.is_empty() {
-        println!("OK — cluster healthy");
+        ctx.io.println("OK — cluster healthy");
     } else {
         for f in &failures {
-            eprintln!("FAIL: {f}");
+            ctx.io.eprintln(&format!("FAIL: {f}"));
         }
     }
-
     if failures.is_empty() {
         Ok(())
     } else {
-        std::process::exit(1);
+        Err(CliError::CheckFailed(format!("{} cluster check(s) failed", failures.len())).into())
     }
 }
 
@@ -407,7 +562,9 @@ pub async fn cluster_verify(as_json: bool) -> anyhow::Result<()> {
 /// `pfctl -sr` for a `set` option that never appears there, and required a
 /// received-snapshot hash that only a standby ever has — a healthy primary
 /// could not pass).
-async fn verify_failures() -> Vec<String> {
+/// Kernel-side checks; they inspect the machine the CLI runs on, so they
+/// only make sense when the target is this appliance.
+async fn kernel_failures() -> Vec<String> {
     let mut failures: Vec<String> = Vec::new();
     if std::env::consts::OS != "freebsd" {
         failures.push(format!(
@@ -454,8 +611,17 @@ async fn verify_failures() -> Vec<String> {
         failures.push(format!("demotion held: {}", names.join(", ")));
     }
 
+    failures
+}
+
+async fn verify_failures(client: &aifw_client::Client, local: bool) -> Vec<String> {
+    let mut failures = if local {
+        kernel_failures().await
+    } else {
+        Vec::new()
+    };
     // 3. API view: peer answering, no split brain, replication state
-    match api_get("/api/v1/cluster/status").await {
+    match client.get("/cluster/status").await {
         Ok(st) => {
             if !st["peer_reachable"].as_bool().unwrap_or(false) {
                 failures.push("peer is not answering on its API".into());

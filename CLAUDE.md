@@ -42,6 +42,8 @@ Increment: major=breaking, minor=features, patch=fixes. When resolving a version
 ### Crate Dependency Flow
 
 ```
+aifw-client (async REST client + TLS pinning; no sqlx)
+    ↑
 aifw-common (shared types: rules, NAT, VPN, TLS, geo-IP, HA, IDS, metrics)
     ↑
 aifw-pf (PfBackend trait + mock/ioctl implementations)
@@ -131,6 +133,34 @@ API integration tests use `axum_test::TestServer` with `create_app_state_in_memo
 
 AiFw rules live in isolated pf anchors (`aifw`, `aifw-nat`, `aifw-vpn`, `aifw-geoip`, etc.), never touching system pf config.
 
+## CLI (`aifw`, crate aifw-cli)
+
+`aifw` is a client of the REST API (CLI v2): lib + thin bin, built on
+`aifw-client`. Each group is a clap enum + `run()` in
+`aifw-cli/src/commands/<group>.rs`; shared plumbing (contexts/credentials,
+connection resolution, output, prompts, exit codes, fan-out) is in
+`aifw-cli/src/cli/`.
+
+- **Only `commands/local/` may touch the DB or pf** (break-glass `aifw local …`);
+  a guard test (`only_local_touches_the_database_or_pf`) enforces it.
+- Output: render API JSON through column specs (`col("HEADER", "/json/pointer")`);
+  `-o json|yaml` prints the API response unchanged. Edits must follow the
+  endpoint: full-replace PUTs get the current object merged with flags.
+- Exit codes are a contract (3 unauth, 4 forbidden, 5 not found, 6 validation,
+  7 unreachable/TLS, 8 partial fan-out, 9 rolled back). Endpoints that answer
+  200 on failure must still exit non-zero (`ctx.service_message`).
+- Tests: CLI integration tests live in `aifw-api/src/tests/cli_*.rs` and run
+  real commands (`aifw_cli::run`) against the real router over TCP
+  (`cli_harness.rs`). `app.rs` `compat_tests` pins every external caller's
+  invocation (maintenance cron, aifw-console, ha-verify.sh, build scripts).
+- On the box, root authenticates with `/usr/local/etc/aifw/cli.key`
+  (reserved key name `aifw-cli-local`, minted on first use, re-minted on 401).
+  On-box automation must call `aifw --context local …` (`local` is reserved:
+  always this appliance) — see the maintenance cron (`/etc/cron.d/aifw-updates`),
+  aifw-console and `scripts/ha-verify.sh`.
+- Fan-out is allowed only for the exact paths in `cli/fanout.rs`
+  `READ_ONLY_PATHS`; add new read-only commands there (a test checks each exists).
+
 ## Web UI
 
 Next.js 15 with `output: "export"` (static HTML, no Node.js on appliance). Tailwind CSS 4, TypeScript. Served by the API via `--ui-dir` flag on port 8080.
@@ -184,7 +214,7 @@ Base: `http://<ip>:8080/api/v1/`
 - **NAT**: `GET/POST /nat`, `PUT/DELETE /nat/{id}`
 - **VPN**: `GET/POST /vpn/wg`, `PUT/DELETE /vpn/wg/{id}`, peers at `/vpn/wg/{id}/peers`; IPsec IKEv2 tunnels at `/vpn/ipsec/tunnels` (CRUD + `/{id}/start|stop|status`, fleet status at `/vpn/ipsec/status`; engine in `aifw-core/src/ipsec.rs`, strongSwan/swanctl-backed); legacy read-only SA records at `/vpn/ipsec`
 - **Geo-IP**: `GET/POST /geoip`, `PUT/DELETE /geoip/{id}`, `GET /geoip/lookup/{ip}`; database at `GET/PUT /geoip/database`, `POST /geoip/database/refresh|upload` (GeoLite2 CSV release loaded from `<db dir>/geoip`, MaxMind download on a schedule — `aifw-api/src/geoip_db.rs`; the anchor references root tables and must never define them, #704)
-- **Auth**: `/auth/login`, `/auth/totp/*`, `/auth/refresh`, `/auth/logout`, `/auth/users`, `/auth/api-keys`, `/auth/oauth/*`
+- **Auth**: `/auth/login`, `/auth/totp/*`, `/auth/refresh`, `/auth/logout`, `/auth/users`, `/auth/api-keys` (self-service create/list/revoke; keys are bound to their creator, optionally role-narrowed and expiring), `/auth/oauth/*`
 - **Status**: `GET /status`, `/connections`, `/metrics`, `/logs`, `POST /reload`
 - **IDS**: `GET/PUT /ids/config`, `POST /ids/reload`, `GET /ids/alerts`, `GET/PUT /ids/alerts/{id}`, `PUT /ids/alerts/{id}/acknowledge`, `GET/POST /ids/rulesets`, `PUT/DELETE /ids/rulesets/{id}`, `GET /ids/rules`, `GET/PUT /ids/rules/{id}`, `GET/POST /ids/suppressions` (paginated via `?limit=&offset=`), `DELETE /ids/suppressions/{id}`, `GET /ids/stats`
 - **DNS**: `GET/PUT /dns`

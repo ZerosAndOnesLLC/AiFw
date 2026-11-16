@@ -1,133 +1,213 @@
-//! `aifw routes …`.
+//! `aifw routes …` — static routes (via the API).
 
-use aifw_core::Database;
-use std::path::Path;
-use uuid::Uuid;
+use clap::Subcommand;
+use serde_json::{Value, json};
 
-// ============================================================
-// Static routes
-// ============================================================
+use crate::cli::body::{self, Fields};
+use crate::cli::{Ctx, col, wide};
 
-/// DDL for the `static_routes` table, shared by every routes_* command so the
-/// schema can't drift between call sites.
-const STATIC_ROUTES_DDL: &str = "CREATE TABLE IF NOT EXISTS static_routes (id TEXT PRIMARY KEY, destination TEXT NOT NULL, gateway TEXT NOT NULL, interface TEXT, metric INTEGER DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1, description TEXT, created_at TEXT NOT NULL)";
-
-pub async fn routes_add(
-    db_path: &Path,
-    dest: &str,
-    gateway: &str,
-    interface: Option<&str>,
-    metric: i32,
-    desc: Option<&str>,
-) -> anyhow::Result<()> {
-    let db = Database::new(db_path).await?;
-    let pool = db.pool();
-
-    // Ensure table exists
-    sqlx::query(STATIC_ROUTES_DDL).execute(pool).await?;
-
-    let id = Uuid::new_v4().to_string();
-    let now = chrono::Utc::now().to_rfc3339();
-    sqlx::query("INSERT INTO static_routes (id, destination, gateway, interface, metric, enabled, description, created_at) VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7)")
-        .bind(&id).bind(dest).bind(gateway).bind(interface).bind(metric).bind(desc).bind(&now)
-        .execute(pool).await?;
-
-    // Apply to system
-    let mut cmd = std::process::Command::new("route");
-    cmd.args(["add", dest, gateway]);
-    if let Some(iface) = interface {
-        cmd.args(["-interface", iface]);
-    }
-    let _ = cmd.output();
-
-    println!("Added route: {} via {} (id: {})", dest, gateway, &id[..8]);
-    Ok(())
+#[derive(Debug, Subcommand)]
+pub enum RoutesCmd {
+    /// Add a static route
+    Add {
+        /// Destination network, e.g. 10.20.0.0/16
+        #[arg(long)]
+        dest: String,
+        /// Next-hop gateway
+        #[arg(long)]
+        gateway: String,
+        #[arg(long)]
+        interface: Option<String>,
+        #[arg(long, default_value = "0")]
+        metric: i32,
+        /// Description
+        #[arg(long)]
+        desc: Option<String>,
+        /// Routing table (multi-WAN FIB)
+        #[arg(long)]
+        fib: Option<u32>,
+        /// Create it disabled
+        #[arg(long)]
+        disabled: bool,
+    },
+    /// Change a static route
+    Edit {
+        id: String,
+        #[arg(long)]
+        dest: Option<String>,
+        #[arg(long)]
+        gateway: Option<String>,
+        #[arg(long)]
+        interface: Option<String>,
+        #[arg(long)]
+        metric: Option<i32>,
+        #[arg(long)]
+        desc: Option<String>,
+        #[arg(long)]
+        fib: Option<u32>,
+    },
+    /// Delete a static route
+    #[command(visible_alias = "rm")]
+    Remove {
+        id: String,
+        #[arg(short, long)]
+        yes: bool,
+    },
+    /// Enable a static route
+    Enable { id: String },
+    /// Disable a static route
+    Disable { id: String },
+    /// List static routes
+    #[command(visible_alias = "ls")]
+    List {
+        #[arg(long, hide = true)]
+        json: bool,
+    },
+    /// Show the kernel routing table (IPv4)
+    System {
+        /// Routing table (FIB) to show
+        #[arg(long)]
+        fib: Option<u32>,
+    },
 }
 
-pub async fn routes_remove(db_path: &Path, id: &str) -> anyhow::Result<()> {
-    let db = Database::new(db_path).await?;
-    let pool = db.pool();
-    let row = sqlx::query_as::<_, (String, String, bool)>(
-        "SELECT destination, gateway, enabled FROM static_routes WHERE id = ?1",
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await?;
+const COLS: &[crate::cli::output::Col] = &[
+    col("ID", "/id"),
+    col("DESTINATION", "/destination"),
+    col("GATEWAY", "/gateway"),
+    col("IFACE", "/interface"),
+    col("METRIC", "/metric"),
+    col("ENABLED", "/enabled"),
+    col("DESCRIPTION", "/description"),
+    wide("FIB", "/fib"),
+];
 
-    if let Some((dest, gw, enabled)) = row {
-        if enabled {
-            // #325: a failed kernel-route delete leaves a stale route the
-            // DB no longer knows about — say so instead of hiding it.
-            match std::process::Command::new("route")
-                .args(["delete", &dest, &gw])
-                .output()
-            {
-                Ok(o) if o.status.success() => {}
-                Ok(o) => eprintln!(
-                    "warning: route delete {dest} {gw} exited {}: {}",
-                    o.status,
-                    String::from_utf8_lossy(&o.stderr).trim()
-                ),
-                Err(e) => eprintln!("warning: route delete {dest} {gw} failed to run: {e}"),
+fn to_request(r: &Value) -> Value {
+    json!({
+        "destination": r["destination"],
+        "gateway": r["gateway"],
+        "interface": r["interface"],
+        "metric": r["metric"],
+        "enabled": r["enabled"],
+        "description": r["description"],
+        "fib": r["fib"],
+    })
+}
+
+async fn find(client: &aifw_client::Client, id: &str) -> anyhow::Result<Value> {
+    let all = client.get("/routes").await?;
+    crate::cli::output::rows(&all)
+        .into_iter()
+        .find(|r| r["id"] == json!(id))
+        .cloned()
+        .ok_or_else(|| aifw_client::ClientError::NotFound(format!("route {id}")).into())
+}
+
+pub async fn run(ctx: &mut Ctx, cmd: RoutesCmd) -> anyhow::Result<()> {
+    let client = ctx.client()?;
+    match cmd {
+        RoutesCmd::List { json } => {
+            let v = client.get("/routes").await?;
+            if json {
+                return ctx.legacy_json(&v, Some(&legacy_route));
             }
+            ctx.list(&v, COLS)
         }
-        sqlx::query("DELETE FROM static_routes WHERE id = ?1")
-            .bind(id)
-            .execute(pool)
-            .await?;
-        println!("Removed route: {} via {}", dest, gw);
-    } else {
-        anyhow::bail!("Route {} not found", id);
-    }
-    Ok(())
-}
-
-pub async fn routes_list(db_path: &Path, json: bool) -> anyhow::Result<()> {
-    let db = Database::new(db_path).await?;
-    let pool = db.pool();
-    let _ = sqlx::query(STATIC_ROUTES_DDL).execute(pool).await;
-
-    let rows = sqlx::query_as::<_, (String, String, String, Option<String>, i32, bool, Option<String>)>(
-        "SELECT id, destination, gateway, interface, metric, enabled, description FROM static_routes ORDER BY metric ASC",
-    ).fetch_all(pool).await?;
-
-    if json {
-        let routes: Vec<serde_json::Value> = rows.iter().map(|(id, d, g, i, m, e, desc)| {
-            serde_json::json!({"id": id, "destination": d, "gateway": g, "interface": i, "metric": m, "enabled": e, "description": desc})
-        }).collect();
-        println!("{}", serde_json::to_string_pretty(&routes)?);
-        return Ok(());
-    }
-
-    if rows.is_empty() {
-        println!("No static routes configured.");
-        return Ok(());
-    }
-
-    println!(
-        "{:<36} {:<20} {:<16} {:<8} {:<8} Status",
-        "ID", "Destination", "Gateway", "Iface", "Metric"
-    );
-    println!("{}", "-".repeat(100));
-    for (id, dest, gw, iface, metric, enabled, _desc) in &rows {
-        let status = if *enabled { "active" } else { "disabled" };
-        println!(
-            "{:<36} {:<20} {:<16} {:<8} {:<8} {}",
+        RoutesCmd::Add {
+            dest,
+            gateway,
+            interface,
+            metric,
+            desc,
+            fib,
+            disabled,
+        } => {
+            let body = Fields::new()
+                .set("destination", dest)
+                .set("gateway", gateway)
+                .opt("interface", interface)
+                .set("metric", metric)
+                .opt("description", desc)
+                .opt("fib", fib)
+                .set("enabled", !disabled)
+                .into_value();
+            let v = client.post("/routes", &body).await?;
+            if ctx.format().is_structured() {
+                return ctx.raw(&v);
+            }
+            ctx.io.println(&format!(
+                "Added route {}",
+                crate::cli::output::item(&v)["id"].as_str().unwrap_or("?")
+            ));
+            Ok(())
+        }
+        RoutesCmd::Edit {
             id,
             dest,
-            gw,
-            iface.as_deref().unwrap_or("-"),
+            gateway,
+            interface,
             metric,
-            status
-        );
+            desc,
+            fib,
+        } => {
+            let current = to_request(&find(&client, &id).await?);
+            let flags = Fields::new()
+                .opt("destination", dest)
+                .opt("gateway", gateway)
+                .opt("interface", interface)
+                .opt("metric", metric)
+                .opt("description", desc)
+                .opt("fib", fib);
+            let body = body::for_update(&mut ctx.io, current, None, flags)?;
+            let v = client.put(&format!("/routes/{id}"), &body).await?;
+            ctx.message(&v, &format!("Updated route {id}"))
+        }
+        RoutesCmd::Enable { id } => set_enabled(ctx, &client, &id, true).await,
+        RoutesCmd::Disable { id } => set_enabled(ctx, &client, &id, false).await,
+        RoutesCmd::Remove { id, yes } => {
+            ctx.confirm(&format!("Delete route {id}?"), yes)?;
+            let v = client.delete(&format!("/routes/{id}")).await?;
+            ctx.message(&v, &format!("Removed route {id}"))
+        }
+        RoutesCmd::System { fib } => {
+            let path = match fib {
+                Some(f) => format!("/routes/system?fib={f}"),
+                None => "/routes/system".into(),
+            };
+            let v = client.get(&path).await?;
+            ctx.list(
+                &v,
+                &[
+                    col("DESTINATION", "/destination"),
+                    col("GATEWAY", "/gateway"),
+                    col("FLAGS", "/flags"),
+                    col("IFACE", "/interface"),
+                ],
+            )
+        }
     }
-    Ok(())
 }
 
-pub async fn routes_system() -> anyhow::Result<()> {
-    let output = std::process::Command::new("netstat")
-        .args(["-rn"])
-        .output()?;
-    println!("{}", String::from_utf8_lossy(&output.stdout));
-    Ok(())
+async fn set_enabled(
+    ctx: &mut Ctx,
+    client: &aifw_client::Client,
+    id: &str,
+    on: bool,
+) -> anyhow::Result<()> {
+    let mut body = to_request(&find(client, id).await?);
+    body["enabled"] = json!(on);
+    let v = client.put(&format!("/routes/{id}"), &body).await?;
+    ctx.message(
+        &v,
+        &format!("Route {id} {}", if on { "enabled" } else { "disabled" }),
+    )
+}
+
+/// Row shape the pre-API `routes list --json` printed.
+fn legacy_route(r: &Value) -> Value {
+    json!({
+        "id": r["id"], "destination": r["destination"], "gateway": r["gateway"],
+        "interface": r["interface"], "metric": r["metric"], "enabled": r["enabled"],
+        "description": r["description"],
+    })
 }

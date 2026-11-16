@@ -23,6 +23,7 @@ use aifw_common::{
 };
 
 pub mod ai;
+pub mod api_keys;
 pub mod auth;
 pub mod config_io;
 pub mod dns;
@@ -43,11 +44,12 @@ pub mod vpn;
 // Explicit re-export lists (#462): renaming an item inside a submodule is a
 // visible change here instead of silently reshaping `routes::*`.
 pub use ai::{get_ai_settings, list_ai_models, test_ai_provider, update_ai_settings};
+pub use api_keys::{create_api_key, list_api_keys, revoke_api_key};
 pub use auth::{
-    create_api_key, create_oauth_provider, delete_oauth_provider, get_auth_settings,
-    get_oauth_settings, list_oauth_providers, login, logout, oauth_authorize, oauth_callback,
-    oauth_login_options, oauth_totp, put_oauth_settings, refresh_token, register, totp_disable,
-    totp_login, totp_setup, totp_verify, update_auth_settings,
+    create_oauth_provider, delete_oauth_provider, get_auth_settings, get_oauth_settings,
+    list_oauth_providers, login, logout, oauth_authorize, oauth_callback, oauth_login_options,
+    oauth_totp, put_oauth_settings, refresh_token, register, totp_disable, totp_login, totp_setup,
+    totp_verify, update_auth_settings,
 };
 pub use config_io::{export_config, export_config_with_passphrase, import_config};
 pub use dns::{get_dns, update_dns};

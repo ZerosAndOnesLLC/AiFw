@@ -86,6 +86,16 @@ pub async fn apply_shaper(
         .apply_queues()
         .await
         .map_err(|_| internal())?;
+    // Rate limits live in the same engine; `aifw reload` relies on this
+    // endpoint loading both, as the direct reload always has.
+    state
+        .shaping_engine
+        .apply_rate_limits()
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "shaper apply: rate limits");
+            internal()
+        })?;
     Ok(Json(MessageResponse {
         message: "shaper configuration applied and verified".into(),
     }))

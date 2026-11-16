@@ -20,6 +20,17 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     sqlx::query(aifw_common::schemas::API_KEYS_CREATE)
         .execute(pool)
         .await?;
+    // CLI v2 phase 0: a key can be narrowed to a role (a subset of its
+    // owner's permissions), can expire, and records when it was last used.
+    aifw_core::schema::add_column_if_missing(pool, "api_keys", "role_id", "TEXT").await?;
+    aifw_core::schema::add_column_if_missing(pool, "api_keys", "expires_at", "TEXT").await?;
+    aifw_core::schema::add_column_if_missing(pool, "api_keys", "last_used_at", "TEXT").await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_api_keys_prefix ON api_keys(prefix)")
+        .execute(pool)
+        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id)")
+        .execute(pool)
+        .await?;
 
     sqlx::query(
         r#"CREATE TABLE IF NOT EXISTS refresh_tokens (

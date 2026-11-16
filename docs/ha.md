@@ -296,8 +296,10 @@ aifw cluster verify
 aifw cluster verify --json | python3 -m json.tool
 ```
 
-Run as root, `aifw cluster` authenticates with the daemon's loopback key; set
-`AIFW_TOKEN` to use your own session token instead.
+Run as root on a node, `aifw cluster` authenticates with the on-box CLI key
+(created on first use). From elsewhere, `aifw login https://<node>:8080` first,
+or set `AIFW_TOKEN` to an API key with `ha:manage`. `--all-contexts cluster
+verify` checks every node you have a context for.
 
 The `verify` command checks:
 

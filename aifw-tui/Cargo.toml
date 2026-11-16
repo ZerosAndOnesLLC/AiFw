@@ -3,6 +3,7 @@ name = "aifw-tui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [[bin]]
 name = "aifw-tui"

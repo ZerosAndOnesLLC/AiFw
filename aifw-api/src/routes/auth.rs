@@ -1,6 +1,6 @@
 //! `/api/v1/auth` handlers — login, TOTP enrolment and second-factor
 //! login, token refresh/logout, auth settings, OAuth provider config,
-//! first-user registration, and API-key minting.
+//! first-user registration. API keys live in `routes::api_keys`.
 //!
 //! `crate::auth` (the auth engine) is imported explicitly below; it
 //! shadows the `auth` module re-exported by the `use super::*` wildcard.
@@ -141,18 +141,45 @@ pub async fn login(
 
 pub async fn totp_login(
     State(state): State<AppState>,
+    client: Option<axum::Extension<crate::client_ip::ClientIp>>,
     Json(req): Json<auth::totp::TotpLoginRequest>,
 ) -> Result<(HeaderMap, Json<auth::TokenPair>), StatusCode> {
-    let user = auth::get_user_by_username(&state.pool, &req.username)
-        .await?
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+    // Same two-axis limiter as `login`: without it the 6-digit second
+    // factor (and the password it re-checks) could be guessed unthrottled.
+    let client_ip = client
+        .and_then(|c| c.0.key())
+        .unwrap_or_else(|| format!("user:{}", req.username));
+    let rl_user = req.username.to_ascii_lowercase();
+    if state.login_limiter.is_blocked(&client_ip, &rl_user).await {
+        return Err(StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    let user = auth::get_user_by_username(&state.pool, &req.username).await?;
+    // Always run Argon2 to prevent timing-based user enumeration.
+    let password_valid = if let Some(ref u) = user {
+        auth::verify_password(&req.password, &u.password_hash)
+    } else {
+        let _ = auth::verify_password(&req.password, auth::password::dummy_hash());
+        false
+    };
+    let Some(user) = user else {
+        state
+            .login_limiter
+            .record_failure(&client_ip, &rl_user)
+            .await;
+        return Err(StatusCode::UNAUTHORIZED);
+    };
 
     if !user.enabled {
         return Err(StatusCode::UNAUTHORIZED);
     }
 
     // Verify password first — TOTP is second factor, not replacement
-    if !auth::verify_password(&req.password, &user.password_hash) {
+    if !password_valid {
+        state
+            .login_limiter
+            .record_failure(&client_ip, &rl_user)
+            .await;
         return Err(StatusCode::UNAUTHORIZED);
     }
 
@@ -170,8 +197,13 @@ pub async fn totp_login(
     };
 
     if !totp_valid && !recovery_valid {
+        state
+            .login_limiter
+            .record_failure(&client_ip, &rl_user)
+            .await;
         return Err(StatusCode::UNAUTHORIZED);
     }
+    state.login_limiter.clear(&client_ip, &rl_user).await;
 
     // Resolve permissions for the JWT
     let (perm_bits, role_name) =
@@ -871,21 +903,6 @@ pub async fn register(
         created_at: now,
     };
     Ok((StatusCode::CREATED, Json(ApiResponse { data: user })))
-}
-
-pub async fn create_api_key(
-    State(state): State<AppState>,
-    Json(req): Json<auth::CreateApiKeyRequest>,
-) -> Result<(StatusCode, Json<auth::CreateApiKeyResponse>), StatusCode> {
-    let row = sqlx::query_as::<_, (String,)>("SELECT id FROM users LIMIT 1")
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(|_| internal())?
-        .ok_or(bad_request())?;
-
-    let user_id = Uuid::parse_str(&row.0).map_err(|_| internal())?;
-    let response = auth::create_api_key(&state.pool, user_id, &req.name).await?;
-    Ok((StatusCode::CREATED, Json(response)))
 }
 
 /// Pull the authenticated user's id out of a `Bearer` token or the session
