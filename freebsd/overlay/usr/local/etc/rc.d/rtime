@@ -20,7 +20,7 @@ pidfile="${rtime_supervisor_pidfile}"
 procname="/usr/sbin/daemon"
 rtime_binary="/usr/local/sbin/rtime"
 command="/usr/sbin/daemon"
-command_args="-f -H -p ${rtime_pidfile} -P ${rtime_supervisor_pidfile} -R 5 -S -T rtime -o /var/log/rtime/rtime.log ${rtime_binary} --config ${rtime_config}"
+command_args="-f -H -p ${rtime_pidfile} -P ${rtime_supervisor_pidfile} -R 5 -o /var/log/rtime/rtime.log ${rtime_binary} --config ${rtime_config}"
 
 start_precmd="rtime_precmd"
 stop_cmd="rtime_stop"

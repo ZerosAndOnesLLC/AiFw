@@ -1388,8 +1388,20 @@ fn main() -> anyhow::Result<()> {
     // periodic tasks don't fully subscribe the scheduler; override with
     // AIFW_WORKER_THREADS.
     let rt = aifw_common::runtime::build("aifw-api")?;
-    rt.block_on(async_main())
+    let result = rt.block_on(async_main());
+    // A blocking task that never finishes must not hold the process past
+    // rc.d's 10 s stop window (#722).
+    rt.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
+    info!("aifw-api stopped");
+    result
 }
+
+/// After SIGTERM, how long open connections (dashboards hold WebSockets
+/// and SSE streams forever) get to finish before they are closed. Must
+/// stay well under the 10 s the rc.d script waits before SIGKILL (#722).
+const SHUTDOWN_DRAIN: std::time::Duration = std::time::Duration::from_secs(5);
+/// How long the runtime waits for blocking tasks once the server stopped.
+const RUNTIME_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 async fn async_main() -> anyhow::Result<()> {
     let args = Args::parse();
@@ -2005,12 +2017,29 @@ async fn async_main() -> anyhow::Result<()> {
         }
         let listener = tokio::net::TcpListener::bind(&args.listen).await?;
         info!("AiFw API listening on http://{}", args.listen);
-        axum::serve(
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        tokio::spawn(async move {
+            shutdown_signal().await;
+            let _ = stop_tx.send(true);
+        });
+        let stopping = |mut rx: tokio::sync::watch::Receiver<bool>| async move {
+            if rx.wait_for(|stop| *stop).await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        };
+        let server = axum::serve(
             listener,
             app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
         )
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+        .with_graceful_shutdown(stopping(stop_rx.clone()));
+        // axum waits for every connection to close; bound that (#722).
+        tokio::select! {
+            r = server => r?,
+            _ = async {
+                stopping(stop_rx).await;
+                tokio::time::sleep(SHUTDOWN_DRAIN).await;
+            } => warn!("shutdown drain window elapsed; closing remaining connections"),
+        }
     } else {
         ensure_tls_cert(&args.tls_cert, &args.tls_key)?;
         let tls_config =
@@ -2025,7 +2054,7 @@ async fn async_main() -> anyhow::Result<()> {
                 shutdown_signal().await;
                 // Stop accepting; give in-flight requests a bounded drain
                 // window before the process exits.
-                handle.graceful_shutdown(Some(std::time::Duration::from_secs(10)));
+                handle.graceful_shutdown(Some(SHUTDOWN_DRAIN));
             }
         });
         axum_server::bind_rustls(addr, tls_config)
@@ -2034,6 +2063,7 @@ async fn async_main() -> anyhow::Result<()> {
             .await?;
     }
 
+    info!("server stopped; shutting down");
     Ok(())
 }
 

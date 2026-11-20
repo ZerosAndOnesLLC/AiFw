@@ -44,6 +44,13 @@ heal_one()
 
 log "starting (pid $$, interval ${INTERVAL}s)"
 
+# Stop promptly on `service aifw_watchdog stop` (#722). The sleep runs in
+# the background and we `wait` for it: sh only runs a trap once the
+# foreground command returns, and an orphaned `sleep` would keep daemon(8)'s
+# output pipe open, so the stop timed out and ended in SIGKILL.
+sleep_pid=""
+trap 'kill ${sleep_pid} 2>/dev/null; log "stopping"; exit 0' TERM INT
+
 # --- sudoers self-heal (defense-in-depth) ----------------------------------
 # Mirror of the refresh in aifw-restart.sh. The restart driver is the primary
 # path (runs on every update/bounce); this runs once at watchdog startup — and
@@ -90,5 +97,8 @@ while true; do
     for svc in aifw_daemon aifw_ids aifw_api; do
         heal_one "${svc}"
     done
-    sleep "${INTERVAL}"
+    sleep "${INTERVAL}" &
+    sleep_pid=$!
+    wait "${sleep_pid}"
+    sleep_pid=""
 done
