@@ -604,6 +604,10 @@ pub(crate) fn settings_write() -> Router<AppState> {
         .route("/api/v1/ca/certs/{id}", delete(ca::delete_cert))
         .route("/api/v1/ca/certs/{id}/key.pem", get(ca::download_cert_key))
         .route("/api/v1/ca/certs/{id}/revoke", post(ca::revoke_cert))
+        .route(
+            "/api/v1/ca/certs/{id}/use-for-ui",
+            post(ca::use_cert_for_ui),
+        )
         .route("/api/v1/time/config", put(time_service::update_config))
         .route("/api/v1/time/sources", post(time_service::create_source))
         .route(

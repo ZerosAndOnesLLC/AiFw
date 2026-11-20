@@ -18,9 +18,6 @@
 use crate::acme::{self, AcmeCert, AcmeExportTarget, ExportTargetKind};
 use chrono::Utc;
 use sqlx::SqlitePool;
-use tokio::process::Command;
-
-const SUDO: &str = "/usr/local/bin/sudo";
 
 /// Run every export target attached to this cert. Errors are recorded on
 /// the target row; the function itself never returns Err.
@@ -111,58 +108,15 @@ async fn run_file(cert: &AcmeCert, cfg: &serde_json::Value) -> Result<(), String
     Ok(())
 }
 
-/// Stage `body` to `/tmp/aifw_acme_export.tmp`, then `sudo install` it into
-/// the destination with the given mode + optional owner. Mirrors the
-/// pattern used by dns_blocklists::atomic_write — same sudoers entries
-/// already permit it.
+/// Install an export file as root (privately staged — see
+/// [`crate::api_tls::install_file`]).
 async fn sudo_install_string(
     body: &str,
     dest: &str,
     mode: &str,
     owner: Option<&str>,
 ) -> Result<(), String> {
-    let basename = std::path::Path::new(dest)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("export");
-    let tmp = format!("/tmp/aifw_acme_export_{basename}.tmp");
-
-    if let Some(parent) = std::path::Path::new(dest).parent() {
-        let res = Command::new(SUDO)
-            .args(["/bin/mkdir", "-p", parent.to_str().unwrap_or("")])
-            .output()
-            .await;
-        // Non-fatal: the install below fails loudly if the dir is missing.
-        crate::sudo::warn_on_fail("acme export: create destination directory", &res);
-    }
-
-    tokio::fs::write(&tmp, body)
-        .await
-        .map_err(|e| format!("stage tmp: {e}"))?;
-
-    // Parse "user:group" form into separate owner/group args. The
-    // `aifw-sudo-install` helper enforces allowlists on both (#204).
-    let (owner_user, owner_group) = match owner {
-        Some(o) => {
-            let mut parts = o.splitn(2, ':');
-            let u = parts.next().filter(|s| !s.is_empty());
-            let g = parts.next();
-            (u, g)
-        }
-        None => (None, None),
-    };
-
-    let out = crate::sudo::install(Some(mode), owner_user, owner_group, &tmp, dest)
-        .await
-        .map_err(|e| format!("spawn sudo install: {e}"))?;
-    let _ = tokio::fs::remove_file(&tmp).await;
-    if !out.status.success() {
-        return Err(format!(
-            "sudo install -> {dest}: {}",
-            String::from_utf8_lossy(&out.stderr).trim(),
-        ));
-    }
-    Ok(())
+    crate::api_tls::install_file(body, dest, mode, owner).await
 }
 
 // ---- webhook --------------------------------------------------------------
@@ -210,25 +164,37 @@ async fn run_local_tls_store(cert: &AcmeCert, cfg: &serde_json::Value) -> Result
         .get("reload_service")
         .and_then(|v| v.as_str())
         .unwrap_or("aifw_api");
-    let dir = "/usr/local/etc/aifw/tls";
     let leaf = cert.cert_pem.as_deref().unwrap_or("");
     let chain = cert.chain_pem.as_deref().unwrap_or("");
     let key = cert.key_pem.as_deref().unwrap_or("");
     let fullchain = format!("{leaf}\n{chain}");
 
-    sudo_install_string(
-        &fullchain,
-        &format!("{dir}/cert.pem"),
-        "0644",
-        Some("root:rdns"),
-    )
-    .await?;
-    sudo_install_string(key, &format!("{dir}/key.pem"), "0640", Some("root:rdns")).await?;
+    // Validated, privately staged, key 0440 root:aifw (#717: this used to
+    // ask for 0640 root:rdns — a mode the install helper refuses, and a
+    // group the API's `aifw` user isn't in).
+    crate::api_tls::install(&fullchain, key).await?;
 
     // Reload the configured service so it picks up the new cert. The
     // helper enforces an allowlist on `reload_service` — operators
     // setting an arbitrary service name in the cert export config will
     // see the call fail loudly rather than escalate via service(8).
-    let _ = crate::sudo::service(reload_service, "restart").await;
-    Ok(())
+    if reload_service == "aifw_api" {
+        // This runs inside the API: restart it a moment later so the
+        // export's result is recorded first (as the updater does).
+        tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            if let Err(e) = crate::api_tls::restart_api().await {
+                tracing::warn!(error = %e, "acme export: API restart for the new certificate failed");
+            }
+        });
+        return Ok(());
+    }
+    match crate::sudo::service(reload_service, "restart").await {
+        Ok(out) if out.status.success() => Ok(()),
+        Ok(out) => Err(format!(
+            "restart {reload_service}: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )),
+        Err(e) => Err(format!("restart {reload_service}: {e}")),
+    }
 }
