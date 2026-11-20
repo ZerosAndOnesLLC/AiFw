@@ -22,7 +22,7 @@
       "name": "rDHCP",
       "repo": "ZerosAndOnesLLC/rDHCP",
       "crate": "rdhcpd",
-      "version": "0.16.1",
+      "version": "0.16.4",
       "binaries": ["rdhcpd"]
     },
     {
@@ -36,7 +36,7 @@
       "name": "rTIME",
       "repo": "ZerosAndOnesLLC/rTIME",
       "crate": "rtimed",
-      "version": "0.15.0",
+      "version": "0.16.0",
       "binaries": ["rtime"]
     }
   ],
