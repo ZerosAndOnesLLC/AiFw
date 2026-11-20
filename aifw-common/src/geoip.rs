@@ -285,42 +285,25 @@ fn u128_to_ip(val: u128, is_v4: bool) -> IpAddr {
     }
 }
 
-/// Parse a GeoLite2 Country CSV blocks file.
+/// Iterate a GeoLite2 Country CSV blocks file without collecting it.
 /// Expected format: network,geoname_id,registered_country_geoname_id,...
-/// Returns (network_ip, prefix, geoname_id)
+/// Yields (network_ip, prefix, geoname_id); the header, malformed rows and
+/// rows without a geoname_id are skipped. The real release is ~2M rows, so
+/// this allocates nothing per row.
+pub fn geolite2_blocks(content: &str) -> impl Iterator<Item = (IpAddr, u8, u32)> + '_ {
+    content.lines().skip(1).filter_map(|line| {
+        let mut fields = line.split(',');
+        let network = fields.next()?.trim();
+        let geoname_id: u32 = fields.next()?.trim().parse().ok()?;
+        let (ip, prefix) = network.split_once('/')?;
+        Some((ip.parse().ok()?, prefix.parse().ok()?, geoname_id))
+    })
+}
+
+/// Parse a GeoLite2 Country CSV blocks file into a Vec (see
+/// [`geolite2_blocks`] to stream it instead).
 pub fn parse_geolite2_blocks_csv(content: &str) -> Vec<(IpAddr, u8, u32)> {
-    let mut results = Vec::new();
-    for line in content.lines().skip(1) {
-        // skip header
-        let fields: Vec<&str> = line.split(',').collect();
-        if fields.len() < 2 {
-            continue;
-        }
-        let network_str = fields[0].trim();
-        let geoname_str = fields[1].trim();
-
-        if geoname_str.is_empty() {
-            continue;
-        }
-
-        let geoname_id: u32 = match geoname_str.parse() {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        if let Some((ip_str, prefix_str)) = network_str.split_once('/') {
-            let ip: IpAddr = match ip_str.parse() {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            let prefix: u8 = match prefix_str.parse() {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            results.push((ip, prefix, geoname_id));
-        }
-    }
-    results
+    geolite2_blocks(content).collect()
 }
 
 /// Parse a GeoLite2 Country CSV locations file.

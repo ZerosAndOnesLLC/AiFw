@@ -9,8 +9,10 @@ use crate::AppState;
 
 /// How often rules written outside the API are picked up.
 const RECONCILE_EVERY: Duration = Duration::from_secs(60);
-/// How often the download schedule is checked.
-const SCHEDULE_EVERY: Duration = Duration::from_secs(3600);
+/// How often the download schedule is checked (a cheap config read). It
+/// was hourly, which let each refresh slip an hour later every day (#720);
+/// `GeoIpEngine::refresh_due` allows one tick of slack so it doesn't slip.
+const SCHEDULE_EVERY: Duration = Duration::from_secs(60);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// Download the GeoLite2 Country CSV release with the stored license key,

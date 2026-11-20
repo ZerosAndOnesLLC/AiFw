@@ -36,6 +36,25 @@ const CFG_SOURCE: &str = "db_source";
 const CFG_UPDATED_AT: &str = "db_updated_at";
 const CFG_LAST_ATTEMPT: &str = "last_refresh_attempt";
 const CFG_LAST_ERROR: &str = "last_error";
+/// SHA-256 of the CSV release currently installed, so an unchanged
+/// download (most scheduled refreshes) doesn't rebuild the index (#719).
+const CFG_RELEASE_SHA: &str = "db_release_sha256";
+/// A refresh this close to its due time counts as due, so a scheduler
+/// ticking every minute doesn't slip a tick per refresh (#720).
+pub const REFRESH_DUE_SLACK_SECS: i64 = 60;
+
+/// ISO 3166 alpha-2 code stored inline in the lookup table: ~1M entries,
+/// so a heap `String` per entry was ~1M allocations per reload (#719).
+type Cc = [u8; 2];
+
+fn cc_of(code: &str) -> Option<Cc> {
+    let b = code.as_bytes();
+    (b.len() == 2).then(|| [b[0].to_ascii_uppercase(), b[1].to_ascii_uppercase()])
+}
+
+fn cc_str(cc: Cc) -> String {
+    cc.iter().map(|&b| char::from(b)).collect()
+}
 
 /// State of the GeoLite2 database behind the engine, for the UI / CLI.
 #[derive(Debug, Clone, Serialize)]
@@ -88,7 +107,7 @@ pub struct GeoIpRuleView {
 /// every country's CIDR list on each lookup.
 struct GeoIpIndex {
     /// Treebitmap for longest-prefix match. Value is the country code.
-    lookup_table: IpNetworkTable<String>,
+    lookup_table: IpNetworkTable<Cc>,
     /// Per-country CIDR list — preserved for pfctl table population
     /// (get_country_cidrs / apply_rules).
     by_country: HashMap<String, Vec<(IpAddr, u8)>>,
@@ -443,12 +462,13 @@ impl GeoIpEngine {
         Ok(Some(due))
     }
 
-    /// Whether the scheduler should download now.
+    /// Whether the scheduler should download now. Due within
+    /// [`REFRESH_DUE_SLACK_SECS`] counts: the last refresh finished a few
+    /// seconds after its scheduler tick, so without the slack the next one
+    /// would always wait for one extra tick (#720).
     pub async fn refresh_due(&self) -> Result<bool> {
-        Ok(self
-            .next_refresh()
-            .await?
-            .is_some_and(|due| due <= Utc::now()))
+        let horizon = Utc::now() + chrono::Duration::seconds(REFRESH_DUE_SLACK_SECS);
+        Ok(self.next_refresh().await?.is_some_and(|due| due <= horizon))
     }
 
     /// MaxMind's permalink for the GeoLite2 Country CSV edition. Needs HTTP
@@ -492,23 +512,28 @@ impl GeoIpEngine {
     /// `locations_csv` is GeoLite2-Country-Locations-en.csv. Returns the
     /// aggregated CIDR count.
     pub async fn load_database(&self, blocks_csv: &str, locations_csv: &str) -> Result<usize> {
-        self.load_csv_parts(&[blocks_csv], locations_csv).await
-    }
-
-    /// Parse any number of blocks files (v4 and v6) plus the locations
-    /// file into an index, off the async threads. Nothing is installed.
-    async fn build_csv_parts(blocks: &[&str], locations_csv: &str) -> Result<GeoIpIndex> {
-        let blocks: Vec<String> = blocks.iter().map(|b| b.to_string()).collect();
-        let locations_csv = locations_csv.to_string();
-        tokio::task::spawn_blocking(move || build_index(&blocks, &locations_csv))
-            .await
-            .map_err(|e| AifwError::Other(format!("geo-ip index build task failed: {e}")))
-    }
-
-    /// Build and install an index; returns the aggregated CIDR count.
-    async fn load_csv_parts(&self, blocks: &[&str], locations_csv: &str) -> Result<usize> {
-        let built = Self::build_csv_parts(blocks, locations_csv).await?;
+        let files = HashMap::from([
+            (BLOCKS_V4_FILE.to_string(), blocks_csv.to_string()),
+            (LOCATIONS_FILE.to_string(), locations_csv.to_string()),
+        ]);
+        let built = Self::build_from_files(Arc::new(files)).await?;
         Ok(self.install_index(built))
+    }
+
+    /// Parse a release (file name → contents: the locations file plus the
+    /// v4 and/or v6 blocks files) into an index, off the async threads.
+    /// The contents are shared, not copied (~40 MB). Nothing is installed.
+    async fn build_from_files(files: Arc<HashMap<String, String>>) -> Result<GeoIpIndex> {
+        tokio::task::spawn_blocking(move || {
+            let blocks: Vec<&str> = [BLOCKS_V4_FILE, BLOCKS_V6_FILE]
+                .iter()
+                .filter_map(|n| files.get(*n).map(String::as_str))
+                .collect();
+            let locations = files.get(LOCATIONS_FILE).map_or("", String::as_str);
+            build_index(&blocks, locations)
+        })
+        .await
+        .map_err(|e| AifwError::Other(format!("geo-ip index build task failed: {e}")))
     }
 
     fn install_index(&self, built: GeoIpIndex) -> usize {
@@ -544,14 +569,14 @@ impl GeoIpEngine {
         let Some(loc) = loc else {
             return Ok(None);
         };
-        let blocks: Vec<&str> = [v4.as_deref(), v6.as_deref()]
-            .into_iter()
-            .flatten()
-            .collect();
-        if blocks.is_empty() {
+        if v4.is_none() && v6.is_none() {
             return Ok(None);
         }
-        Ok(Some(self.load_csv_parts(&blocks, &loc).await?))
+        let mut files = HashMap::from([(LOCATIONS_FILE.to_string(), loc)]);
+        files.extend(v4.map(|c| (BLOCKS_V4_FILE.to_string(), c)));
+        files.extend(v6.map(|c| (BLOCKS_V6_FILE.to_string(), c)));
+        let built = Self::build_from_files(Arc::new(files)).await?;
+        Ok(Some(self.install_index(built)))
     }
 
     /// Install a GeoLite2 Country CSV release from a MaxMind zip archive:
@@ -592,20 +617,40 @@ impl GeoIpEngine {
                 "a GeoLite2 Country CSV release needs {LOCATIONS_FILE} and at least one of {BLOCKS_V4_FILE} / {BLOCKS_V6_FILE}"
             )));
         }
+        let files = Arc::new(files);
+        let dir = self.db_dir().await;
+
+        // Most scheduled refreshes download the same release again (MaxMind
+        // publishes about twice a week): keep the loaded index rather than
+        // rebuilding ~1M entries for nothing (#719).
+        let sha = {
+            let files = Arc::clone(&files);
+            tokio::task::spawn_blocking(move || release_sha256(&files))
+                .await
+                .map_err(|e| AifwError::Other(format!("geo-ip hash task failed: {e}")))?
+        };
+        let loaded = self.db_stats().await.1;
+        if loaded > 0
+            && self.config_get(CFG_RELEASE_SHA).await?.as_deref() == Some(sha.as_str())
+            && files.keys().all(|name| dir.join(name).exists())
+        {
+            self.config_set(CFG_SOURCE, Some(source)).await?;
+            self.config_set(CFG_UPDATED_AT, Some(&Utc::now().to_rfc3339()))
+                .await?;
+            self.config_set(CFG_LAST_ERROR, None).await?;
+            tracing::info!(%source, cidrs = loaded, "geo-ip release unchanged; keeping the loaded index");
+            return Ok(loaded);
+        }
+
         // Validate before touching disk or the live index: a release that
         // parses to nothing must not replace a working one.
-        let blocks: Vec<&str> = [BLOCKS_V4_FILE, BLOCKS_V6_FILE]
-            .iter()
-            .filter_map(|n| files.get(*n).map(String::as_str))
-            .collect();
-        let built = Self::build_csv_parts(&blocks, &files[LOCATIONS_FILE]).await?;
+        let built = Self::build_from_files(Arc::clone(&files)).await?;
         if built.by_country.is_empty() {
             return Err(AifwError::Validation(
                 "the files parsed to zero networks; is this a GeoLite2 *Country* CSV release?"
                     .into(),
             ));
         }
-        let dir = self.db_dir().await;
         tokio::fs::create_dir_all(&dir)
             .await
             .map_err(|e| AifwError::Other(format!("{}: {e}", dir.display())))?;
@@ -631,6 +676,7 @@ impl GeoIpEngine {
             }
         }
         let count = self.install_index(built);
+        self.config_set(CFG_RELEASE_SHA, Some(&sha)).await?;
         self.config_set(CFG_SOURCE, Some(source)).await?;
         self.config_set(CFG_UPDATED_AT, Some(&Utc::now().to_rfc3339()))
             .await?;
@@ -649,7 +695,7 @@ impl GeoIpEngine {
             };
             return GeoIpLookupResult {
                 ip,
-                country: Some(CountryCode(country.clone())),
+                country: Some(CountryCode(cc_str(*country))),
                 network: Some(format!("{network_ip}/{prefix}")),
             };
         }
@@ -779,6 +825,13 @@ impl GeoIpEngine {
         Ok(())
     }
 
+    /// Identity of the installed index, so tests can tell a rebuild from
+    /// a kept index.
+    #[cfg(test)]
+    pub(crate) fn index_id(&self) -> usize {
+        Arc::as_ptr(&self.index.load_full()) as usize
+    }
+
     /// Get database statistics
     pub async fn db_stats(&self) -> (usize, usize) {
         let index = self.index.load();
@@ -788,36 +841,53 @@ impl GeoIpEngine {
     }
 }
 
-/// Parse blocks + locations CSVs into an index (blocking: hundreds of
-/// thousands of lines for the real release).
-fn build_index(blocks: &[String], locations_csv: &str) -> GeoIpIndex {
-    let locations = aifw_common::geoip::parse_geolite2_locations_csv(locations_csv);
-    let mut country_cidrs: HashMap<String, Vec<(IpAddr, u8)>> = HashMap::new();
+/// Parse blocks + locations CSVs into an index (blocking: ~2M lines for
+/// the real release). Rows are streamed; only the per-country CIDR lists
+/// and the lookup table are allocated.
+fn build_index(blocks: &[&str], locations_csv: &str) -> GeoIpIndex {
+    let locations: HashMap<u32, Cc> =
+        aifw_common::geoip::parse_geolite2_locations_csv(locations_csv)
+            .into_iter()
+            .filter_map(|(id, code)| Some((id, cc_of(&code)?)))
+            .collect();
+    let mut by_cc: HashMap<Cc, Vec<(IpAddr, u8)>> = HashMap::new();
     for csv in blocks {
-        for (ip, prefix, geoname_id) in aifw_common::geoip::parse_geolite2_blocks_csv(csv) {
-            if let Some(country) = locations.get(&geoname_id) {
-                country_cidrs
-                    .entry(country.clone())
-                    .or_default()
-                    .push((ip, prefix));
+        for (ip, prefix, geoname_id) in aifw_common::geoip::geolite2_blocks(csv) {
+            if let Some(&cc) = locations.get(&geoname_id) {
+                by_cc.entry(cc).or_default().push((ip, prefix));
             }
         }
     }
-    for cidrs in country_cidrs.values_mut() {
-        *cidrs = aifw_common::geoip::aggregate_cidrs(std::mem::take(cidrs));
-    }
-    let mut lookup_table: IpNetworkTable<String> = IpNetworkTable::new();
-    for (country, cidrs) in &country_cidrs {
-        for &(addr, prefix) in cidrs {
+    let mut lookup_table: IpNetworkTable<Cc> = IpNetworkTable::new();
+    let mut by_country = HashMap::with_capacity(by_cc.len());
+    for (cc, cidrs) in by_cc {
+        let mut cidrs = aifw_common::geoip::aggregate_cidrs(cidrs);
+        cidrs.shrink_to_fit();
+        for &(addr, prefix) in &cidrs {
             if let Some(net) = build_ip_network(addr, prefix) {
-                lookup_table.insert(net, country.clone());
+                lookup_table.insert(net, cc);
             }
         }
+        by_country.insert(cc_str(cc), cidrs);
     }
     GeoIpIndex {
         lookup_table,
-        by_country: country_cidrs,
+        by_country,
     }
+}
+
+/// Content hash of a release (names and contents, in a fixed order).
+fn release_sha256(files: &HashMap<String, String>) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    for name in [BLOCKS_V4_FILE, BLOCKS_V6_FILE, LOCATIONS_FILE] {
+        if let Some(content) = files.get(name) {
+            h.update(name.as_bytes());
+            h.update((content.len() as u64).to_le_bytes());
+            h.update(content.as_bytes());
+        }
+    }
+    hex::encode(h.finalize())
 }
 
 /// Pull the three Country CSVs out of a MaxMind zip (they sit under a

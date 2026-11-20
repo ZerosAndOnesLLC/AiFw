@@ -309,3 +309,79 @@ async fn license_key_is_sealed_and_drives_the_schedule() {
 fn engine_pool(engine: &crate::geoip::GeoIpEngine) -> &sqlx::SqlitePool {
     engine.pool()
 }
+
+/// #719: re-importing the release that is already loaded keeps the index
+/// (no rebuild); a changed release replaces it.
+#[tokio::test]
+async fn unchanged_release_keeps_the_loaded_index() {
+    let (engine, _mock, _scratch) = engine_with_scratch_dir().await;
+    let release = |blocks: &str| {
+        std::collections::HashMap::from([
+            (
+                "GeoLite2-Country-Blocks-IPv4.csv".to_string(),
+                blocks.to_string(),
+            ),
+            (
+                "GeoLite2-Country-Locations-en.csv".to_string(),
+                LOCATIONS.to_string(),
+            ),
+        ])
+    };
+    assert_eq!(
+        engine
+            .import_csv_files(release(BLOCKS_V4), "maxmind")
+            .await
+            .unwrap(),
+        2
+    );
+    let first = engine.index_id();
+
+    assert_eq!(
+        engine
+            .import_csv_files(release(BLOCKS_V4), "maxmind")
+            .await
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        engine.index_id(),
+        first,
+        "same release must not rebuild the index"
+    );
+    let st = engine.status().await.unwrap();
+    assert!(st.last_error.is_none());
+
+    let changed = format!("{BLOCKS_V4}2.0.0.0/24,2077456,2077456\n");
+    assert_eq!(
+        engine
+            .import_csv_files(release(&changed), "maxmind")
+            .await
+            .unwrap(),
+        3
+    );
+    assert_ne!(engine.index_id(), first, "a new release replaces the index");
+}
+
+/// #720: a refresh due a few seconds after the scheduler's tick runs on
+/// that tick instead of slipping to the next one.
+#[tokio::test]
+async fn refresh_due_allows_one_tick_of_slack() {
+    let (engine, _mock, _scratch) = engine_with_scratch_dir().await;
+    engine
+        .set_license_key(Some("AbCdEf0123456789_x"))
+        .await
+        .unwrap();
+    engine.set_update_interval_hours(24).await.unwrap();
+    let set_updated = |secs_ago: i64| {
+        let at = (chrono::Utc::now() - chrono::Duration::seconds(secs_ago)).to_rfc3339();
+        sqlx::query("INSERT OR REPLACE INTO geoip_config (key, value) VALUES ('db_updated_at', ?1)")
+            .bind(at)
+            .execute(engine_pool(&engine))
+    };
+    // Last refresh finished 20 s after its tick, 24 h ago: due now.
+    set_updated(24 * 3600 - 20).await.unwrap();
+    assert!(engine.refresh_due().await.unwrap());
+    // Due in 5 minutes: not yet.
+    set_updated(24 * 3600 - 300).await.unwrap();
+    assert!(!engine.refresh_due().await.unwrap());
+}

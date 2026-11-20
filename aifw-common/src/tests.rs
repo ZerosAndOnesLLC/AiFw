@@ -1084,6 +1084,19 @@ mod tests {
         assert_eq!(locs.get(&1814991).unwrap(), "CN");
     }
 
+    #[test]
+    fn test_geolite2_blocks_skips_bad_rows() {
+        let blocks = "network,geoname_id,registered_country_geoname_id\n\
+                       1.0.0.0/24,,2077456\n\
+                       not-a-net,2077456,2077456\n\
+                       1.0.1.0/33x,1814991,1814991\n\
+                       2001:db8::/32,1814991,1814991\n";
+        let rows: Vec<_> = geolite2_blocks(blocks).collect();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].1, 32);
+        assert_eq!(rows[0].2, 1814991);
+    }
+
     // --- TLS tests ---
 
     #[test]
