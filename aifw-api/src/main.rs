@@ -9,6 +9,7 @@ mod client_ip;
 mod cluster;
 mod dhcp;
 mod dns_blocklists;
+mod dns_recursion;
 mod dns_resolver;
 mod geoip_db;
 mod ha_roles;
