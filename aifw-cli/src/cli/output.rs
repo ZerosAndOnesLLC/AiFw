@@ -120,7 +120,7 @@ pub fn table(rows: &[&Value], cols: &[Col], format: Format) -> String {
         .filter(|c| !c.wide || format == Format::Wide)
         .collect();
     let mut t = Table::new();
-    t.load_preset(NOTHING)
+    t.load_style(NOTHING)
         .set_content_arrangement(ContentArrangement::Disabled)
         .set_header(cols.iter().map(|c| c.header));
     for r in rows {
