@@ -935,8 +935,17 @@ async fn generate_rdns_conf(pool: &SqlitePool) -> String {
         if c.log_queries { "true" } else { "false" }
     ));
 
-    // [security]
-    toml.push_str("[security]\nsandbox = false\nrate_limit = 1000\n\n");
+    // [security] — always an explicit recursion allow-list: rDNS treats an
+    // empty one as an open resolver (#721).
+    let allow: Vec<String> = crate::dns_recursion::allow_list(pool)
+        .await
+        .iter()
+        .map(|n| format!("\"{n}\""))
+        .collect();
+    toml.push_str(&format!(
+        "[security]\nsandbox = false\nrate_limit = 1000\nallow_recursion = [{}]\n\n",
+        allow.join(", ")
+    ));
 
     // [rpz] — host overrides (rewrites) + blocklists
     let host_count: i64 =
@@ -2300,6 +2309,40 @@ pub async fn resolver_logs(
 
 #[cfg(test)]
 mod tests {
+    /// #721: rdns.toml always carries an explicit recursion allow-list
+    /// built from the DNS access list.
+    #[tokio::test]
+    async fn rdns_conf_limits_recursion_to_the_access_list() {
+        let db = aifw_core::Database::new_in_memory().await.unwrap();
+        let pool = db.pool().clone();
+        for ddl in [
+            "CREATE TABLE IF NOT EXISTS dns_access_lists (id TEXT PRIMARY KEY, network TEXT NOT NULL, \
+             action TEXT NOT NULL, description TEXT, created_at TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS interface_roles (interface_name TEXT PRIMARY KEY, role TEXT NOT NULL, \
+             updated_at TEXT)",
+            "DELETE FROM dns_access_lists",
+        ] {
+            sqlx::query(ddl).execute(&pool).await.unwrap();
+        }
+        for (net, action) in [("10.1.0.0/16", "allow"), ("10.1.2.3/32", "deny")] {
+            sqlx::query(
+                "INSERT INTO dns_access_lists (id, network, action, description, created_at) \
+                 VALUES (?1, ?2, ?3, '', '2026-01-01T00:00:00Z')",
+            )
+            .bind(uuid::Uuid::new_v4().to_string())
+            .bind(net)
+            .bind(action)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let conf = super::generate_rdns_conf(&pool).await;
+        assert!(
+            conf.contains("allow_recursion = [\"127.0.0.0/8\", \"::1/128\", \"10.1.0.0/16\"]"),
+            "{conf}"
+        );
+    }
+
     use super::*;
     use tokio::net::{TcpListener, UdpSocket};
 
