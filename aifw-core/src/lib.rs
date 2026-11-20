@@ -13,6 +13,7 @@ pub mod acme_engine;
 pub mod acme_export;
 /// [`AliasEngine`] — named host/network/port/URL aliases mirrored into pf tables
 pub mod alias;
+pub mod api_tls;
 /// Append-only audit log of configuration changes
 pub mod audit;
 /// CARP / pfsync kernel control (via `aifw-sudo-carp`) and kernel-state reads

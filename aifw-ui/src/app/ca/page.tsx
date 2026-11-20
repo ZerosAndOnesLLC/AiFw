@@ -108,6 +108,8 @@ export default function CaPage() {
   // Confirm dialogs
   const [revokeId, setRevokeId] = useState<string | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [uiCert, setUiCert] = useState<CertRecord | null>(null);
+  const [installingUi, setInstallingUi] = useState(false);
 
   const showFeedback = (type: "success" | "error", msg: string) => {
     setFeedback({ type, msg });
@@ -222,6 +224,21 @@ export default function CaPage() {
       await fetchCerts();
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Revoke failed");
+    }
+  };
+
+  const installForWebUi = async (cert: CertRecord) => {
+    setInstallingUi(true);
+    try {
+      const res = await api.post<{ message?: string }>(`/api/v1/ca/certs/${cert.id}/use-for-ui`);
+      setUiCert(null);
+      showFeedback("success", `${res?.message ?? "Certificate installed"} — reloading in a few seconds…`);
+      // The API restarts to serve the new certificate; reload once it is back.
+      window.setTimeout(() => window.location.reload(), 8000);
+    } catch (err) {
+      showFeedback("error", err instanceof Error ? err.message : "Installing the certificate failed");
+    } finally {
+      setInstallingUi(false);
     }
   };
 
@@ -501,6 +518,16 @@ export default function CaPage() {
                               <path strokeLinecap="round" strokeLinejoin="round" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
                             </svg>
                           </button>
+                          {/* Use for web UI */}
+                          {cert.cert_type === "server" && cert.status === "active" && (
+                            <button onClick={() => setUiCert(cert)}
+                              title="Use for Web UI"
+                              className="p-1.5 text-[var(--text-muted)] hover:text-green-400 rounded hover:bg-green-500/10">
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                              </svg>
+                            </button>
+                          )}
                           {/* Revoke */}
                           {cert.status === "active" && (
                             <button onClick={() => setRevokeId(cert.id)}
@@ -566,6 +593,38 @@ export default function CaPage() {
               <button onClick={() => revokeCert(revokeId)}
                 className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm rounded-md">
                 Revoke
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Use for Web UI Confirm Modal ──────────────────────── */}
+      {uiCert && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="bg-gray-800 border border-gray-700 rounded-lg p-6 max-w-sm w-full mx-4 space-y-4">
+            <h3 className="text-lg font-semibold text-white">Use for Web UI</h3>
+            <p className="text-sm text-[var(--text-secondary)]">
+              Serve <span className="text-white font-medium">{uiCert.common_name}</span> as the web UI and API
+              certificate? The API restarts to load it, so this page will briefly disconnect.
+            </p>
+            <p className="text-sm text-[var(--text-secondary)]">
+              Browse to the firewall by a name or IP listed on the certificate
+              ({truncate(uiCert.sans || uiCert.common_name, 60)}), and trust the AiFw CA on your
+              device (Download CA Cert) to avoid certificate warnings.
+            </p>
+            <p className="text-sm text-[var(--text-secondary)]">
+              In an HA cluster, re-pin this firewall on its peer afterwards; saved CLI contexts
+              need <span className="font-mono">aifw context set-pin</span>.
+            </p>
+            <div className="flex justify-end gap-3">
+              <button onClick={() => setUiCert(null)} disabled={installingUi}
+                className="px-4 py-2 text-sm text-[var(--text-muted)] hover:text-white disabled:opacity-50">
+                Cancel
+              </button>
+              <button onClick={() => installForWebUi(uiCert)} disabled={installingUi}
+                className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm rounded-md disabled:opacity-50">
+                {installingUi ? "Installing…" : "Install & Restart"}
               </button>
             </div>
           </div>

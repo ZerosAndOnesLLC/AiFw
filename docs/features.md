@@ -175,6 +175,7 @@ See the [reverse proxy guide]({{ '/docs/reverse-proxy/' | relative_url }}) for s
 - PEM export (cert + key)
 - Certificate revocation with CRL
 - PKCS#12 bundle generation
+- **Use for web UI** — serve an issued server certificate (chained to the CA) as the web UI / API certificate; the API restarts to load it. Trust the AiFw CA on your devices and browse by a name on the certificate. HA peers and saved CLI contexts pin this firewall's certificate, so re-pin afterwards (`aifw cluster repin <id>` on the peer, `aifw context set-pin <name>` on the laptop).
 
 ## Authentication
 

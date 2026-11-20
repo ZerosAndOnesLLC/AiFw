@@ -162,6 +162,7 @@ aifw vpn wg add --name road --address 10.8.0.1/24
 aifw vpn wg peers add <tunnel> --name laptop --generate-key
 aifw dns add-host nas home.arpa 192.168.1.20 && aifw dns apply
 aifw ca certs issue --type server --common-name vpn.lan --out-dir ./certs
+aifw ca certs use-for-ui <id>        # serve a CA-issued cert for the web UI / API
 aifw api-keys create --name ci --role builtin-viewer --expires-days 30
 
 # Scripts: JSON output and stable exit codes; read-only fan-out across firewalls

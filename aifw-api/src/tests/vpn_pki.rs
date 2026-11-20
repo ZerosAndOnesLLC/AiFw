@@ -299,3 +299,116 @@ async fn test_ipsec_status_endpoint_lists_all() {
             .starts_with("aifw-")
     );
 }
+
+/// #717: certificates issued by the internal CA must chain to it — the
+/// issuer is the CA's real subject and a real verifier accepts the leaf.
+#[tokio::test]
+async fn issued_certificate_chains_to_the_ca() {
+    use rustls::client::danger::ServerCertVerifier;
+    use rustls::pki_types::{CertificateDer, ServerName, UnixTime, pem::PemObject};
+
+    let (server, _) = test_app().await;
+    let token = create_user_and_login(&server).await;
+    server
+        .post("/api/v1/ca")
+        .authorization_bearer(&token)
+        .json(&json!({"common_name": "Test Root", "organization": "AiFw"}))
+        .await
+        .assert_status(StatusCode::CREATED);
+    let issued: Value = server
+        .post("/api/v1/ca/certs")
+        .authorization_bearer(&token)
+        .json(
+            &json!({"cert_type": "server", "common_name": "fw.example.test", "sans": ["10.0.0.1"]}),
+        )
+        .await
+        .json();
+    let ca_pem = server
+        .get("/api/v1/ca/cert.pem")
+        .authorization_bearer(&token)
+        .await
+        .text();
+
+    let leaf =
+        CertificateDer::from_pem_slice(issued["certificate_pem"].as_str().unwrap().as_bytes())
+            .unwrap();
+    let ca = CertificateDer::from_pem_slice(ca_pem.as_bytes()).unwrap();
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(ca).unwrap();
+    let provider = std::sync::Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let verifier = rustls::client::WebPkiServerVerifier::builder_with_provider(
+        std::sync::Arc::new(roots),
+        provider,
+    )
+    .build()
+    .unwrap();
+    let name = ServerName::try_from("fw.example.test").unwrap();
+    verifier
+        .verify_server_cert(&leaf, &[], &name, &[], UnixTime::now())
+        .expect("issued certificate validates against the AiFw CA");
+    let ip = ServerName::try_from("10.0.0.1").unwrap();
+    verifier
+        .verify_server_cert(&leaf, &[], &ip, &[], UnixTime::now())
+        .expect("SAN IP validates too");
+    let other = ServerName::try_from("other.example.test").unwrap();
+    assert!(
+        verifier
+            .verify_server_cert(&leaf, &[], &other, &[], UnixTime::now())
+            .is_err()
+    );
+}
+
+/// #717: "use for web UI" refuses anything but an active server cert,
+/// before touching the installed certificate.
+#[tokio::test]
+async fn use_for_ui_refuses_unsuitable_certificates() {
+    let (server, _) = test_app().await;
+    let token = create_user_and_login(&server).await;
+
+    server
+        .post("/api/v1/ca/certs/nope/use-for-ui")
+        .authorization_bearer(&token)
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+
+    server
+        .post("/api/v1/ca")
+        .authorization_bearer(&token)
+        .json(&json!({}))
+        .await
+        .assert_status(StatusCode::CREATED);
+    let issue = |cert_type: &'static str| {
+        server
+            .post("/api/v1/ca/certs")
+            .authorization_bearer(&token)
+            .json(&json!({"cert_type": cert_type, "common_name": "fw.example.test"}))
+    };
+    let client: Value = issue("client").await.json();
+    let resp = server
+        .post(&format!(
+            "/api/v1/ca/certs/{}/use-for-ui",
+            client["id"].as_str().unwrap()
+        ))
+        .authorization_bearer(&token)
+        .await;
+    resp.assert_status(StatusCode::BAD_REQUEST);
+    assert!(
+        resp.text().contains("server certificates"),
+        "{}",
+        resp.text()
+    );
+
+    let srv: Value = issue("server").await.json();
+    let id = srv["id"].as_str().unwrap();
+    server
+        .post(&format!("/api/v1/ca/certs/{id}/revoke"))
+        .authorization_bearer(&token)
+        .await
+        .assert_status_ok();
+    let resp = server
+        .post(&format!("/api/v1/ca/certs/{id}/use-for-ui"))
+        .authorization_bearer(&token)
+        .await;
+    resp.assert_status(StatusCode::BAD_REQUEST);
+    assert!(resp.text().contains("revoked"), "{}", resp.text());
+}

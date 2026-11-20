@@ -473,15 +473,13 @@ pub async fn issue_cert(
         tracing::error!(error = %e, "ca: failed to parse CA private key");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
-    // Rebuild CA cert params for signing
-    let mut ca_params = CertificateParams::new(Vec::<String>::new()).map_err(|e| {
-        tracing::error!(error = %e, "ca: failed to build CA params for signing");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-    ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
-    let ca_cert = ca_params.self_signed(&ca_key).map_err(|e| {
-        tracing::error!(error = %e, "ca: failed to rebuild CA certificate");
+    // Sign as the CA certificate actually stored: its subject becomes the
+    // issued certificate's issuer, and its subject key identifier the
+    // authority key identifier. (Rebuilding the CA from blank params here
+    // signed every certificate as `CN=rcgen self signed cert`, so nothing
+    // chained to the AiFw CA.)
+    let issuer = Issuer::from_ca_cert_pem(&ca.0, ca_key).map_err(|e| {
+        tracing::error!(error = %e, "ca: failed to load the CA certificate as issuer");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
@@ -534,11 +532,6 @@ pub async fn issue_cert(
         _ => return Err(StatusCode::BAD_REQUEST),
     }
 
-    // rcgen 0.14 consolidated the (CA cert, CA key) pair into an `Issuer`.
-    // Constructed from the CA params + key we already have. `ca_cert` remains
-    // the source of truth for the embedded CA certificate.
-    let _ = &ca_cert; // kept for code clarity; not passed to signed_by anymore
-    let issuer = Issuer::new(ca_params, ca_key);
     let cert = params.signed_by(&cert_key, &issuer).map_err(|e| {
         tracing::error!(error = %e, "ca: failed to sign certificate");
         StatusCode::INTERNAL_SERVER_ERROR
@@ -695,4 +688,104 @@ pub async fn get_crl(State(state): State<AppState>) -> Result<String, StatusCode
         ));
     }
     Ok(crl)
+}
+
+/// `POST /api/v1/ca/certs/{id}/use-for-ui` — install an issued server
+/// certificate (leaf + the CA as its chain) as the certificate the API and
+/// web UI serve, then restart the API to pick it up (#717).
+pub async fn use_cert_for_ui(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<MessageResponse>, (StatusCode, Json<MessageResponse>)> {
+    let fail = |status: StatusCode, message: String| (status, Json(MessageResponse { message }));
+    let internal = |what: &str, e: sqlx::Error| {
+        tracing::error!(error = %e, "ca: {what}");
+        fail(StatusCode::INTERNAL_SERVER_ERROR, what.to_string())
+    };
+
+    let (cert_type, common_name, status, not_after, cert_pem, key_pem) =
+        sqlx::query_as::<_, (String, String, String, String, String, String)>(
+            "SELECT cert_type, common_name, status, not_after, cert_pem, key_pem FROM ca_certificates WHERE id = ?1",
+        )
+        .bind(&id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| internal("failed to load the certificate", e))?
+        .ok_or_else(|| fail(StatusCode::NOT_FOUND, format!("certificate {id} not found")))?;
+    let usable = check_usable_for_ui(&cert_type, &status, &not_after, &Utc::now().to_rfc3339());
+    usable.map_err(|m| fail(StatusCode::BAD_REQUEST, m.to_string()))?;
+
+    let (ca_pem,) = sqlx::query_as::<_, (String,)>("SELECT cert_pem FROM ca_root WHERE id = 1")
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| internal("failed to load the CA certificate", e))?
+        .ok_or_else(|| {
+            fail(
+                StatusCode::BAD_REQUEST,
+                "the internal CA is not initialized".into(),
+            )
+        })?;
+
+    let fullchain = format!("{}\n{}", cert_pem.trim_end(), ca_pem.trim_end());
+    aifw_core::api_tls::install(&fullchain, &key_pem)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, cert = %id, "ca: installing the web UI certificate failed");
+            fail(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("installing the certificate failed: {e}"),
+            )
+        })?;
+    tracing::info!(cert = %id, cn = %common_name, "ca: certificate installed for the web UI; restarting the API");
+
+    // Answer first, then restart (this process is the API).
+    tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        if let Err(e) = aifw_core::api_tls::restart_api().await {
+            tracing::warn!(error = %e, "ca: API restart for the new certificate failed");
+        }
+    });
+    Ok(Json(MessageResponse {
+        message: format!("{common_name} installed for the web UI; the API is restarting"),
+    }))
+}
+
+/// Only an active, unexpired server certificate can serve the web UI.
+/// `not_after` / `now` are RFC 3339 UTC strings (they compare as text).
+fn check_usable_for_ui(
+    cert_type: &str,
+    status: &str,
+    not_after: &str,
+    now: &str,
+) -> Result<(), &'static str> {
+    if cert_type != "server" {
+        return Err("only server certificates can be used for the web UI");
+    }
+    if status != "active" {
+        return Err("the certificate is revoked");
+    }
+    if not_after < now {
+        return Err("the certificate has expired");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod use_for_ui_tests {
+    use super::check_usable_for_ui;
+
+    const NOW: &str = "2026-11-20T12:00:00+00:00";
+
+    #[test]
+    fn only_active_unexpired_server_certs_qualify() {
+        assert!(check_usable_for_ui("server", "active", "2027-11-20T12:00:00+00:00", NOW).is_ok());
+        assert!(check_usable_for_ui("client", "active", "2027-11-20T12:00:00+00:00", NOW).is_err());
+        assert!(
+            check_usable_for_ui("server", "revoked", "2027-11-20T12:00:00+00:00", NOW).is_err()
+        );
+        assert_eq!(
+            check_usable_for_ui("server", "active", "2026-11-19T12:00:00+00:00", NOW),
+            Err("the certificate has expired")
+        );
+    }
 }

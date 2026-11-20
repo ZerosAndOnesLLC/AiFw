@@ -356,6 +356,10 @@ async fn certificates() {
         .await
         .ok();
     assert!(cli.run(&["ca", "crl"]).await.out.contains("vpn.lan"));
+    // A revoked certificate can't serve the web UI (#717): validation exit.
+    let r = cli.run(&["ca", "certs", "use-for-ui", &cid, "--yes"]).await;
+    r.code(6);
+    assert!(r.err.contains("revoked"), "{}", r.err);
     // Re-init asks first.
     cli.run(&["ca", "init"]).await.code(1);
 }

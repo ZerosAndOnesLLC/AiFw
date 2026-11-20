@@ -453,6 +453,13 @@ pub enum CaCertCmd {
         #[arg(short, long)]
         yes: bool,
     },
+    /// Serve a server certificate (chained to the CA) as the web UI / API
+    /// certificate; the API restarts to load it (needs settings:write)
+    UseForUi {
+        id: String,
+        #[arg(short, long)]
+        yes: bool,
+    },
     #[command(visible_alias = "rm")]
     Remove {
         id: String,
@@ -608,6 +615,16 @@ pub async fn ca(ctx: &mut Ctx, cmd: CaCmd) -> anyhow::Result<()> {
                 ctx.confirm(&format!("Revoke certificate {id}?"), yes)?;
                 let v = client.post_empty(&format!("/ca/certs/{id}/revoke")).await?;
                 ctx.message(&v, "Revoked")
+            }
+            CaCertCmd::UseForUi { id, yes } => {
+                ctx.confirm(
+                    &format!("Serve certificate {id} for the web UI? The API restarts to load it."),
+                    yes,
+                )?;
+                let v = client
+                    .post_empty(&format!("/ca/certs/{id}/use-for-ui"))
+                    .await?;
+                ctx.message(&v, "Installed; the API is restarting")
             }
             CaCertCmd::Remove { id, yes } => {
                 ctx.confirm(&format!("Delete certificate {id}?"), yes)?;

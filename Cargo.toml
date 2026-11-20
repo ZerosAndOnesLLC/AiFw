@@ -90,7 +90,9 @@ anyhow = "1"
 sha2 = "0.11"
 hmac = "0.13"
 hex = "0.4"
-rcgen = "0.14"
+# x509-parser: sign with the stored CA certificate (Issuer::from_ca_cert_pem)
+# so issued certificates carry the CA's real subject and key identifier.
+rcgen = { version = "0.14", features = ["x509-parser"] }
 libc = "0.2"
 time = "0.3"
 rustls = "0.23"
