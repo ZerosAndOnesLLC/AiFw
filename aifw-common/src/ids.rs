@@ -478,6 +478,59 @@ impl SuppressType {
     }
 }
 
+/// Checks an IDS suppression address: a bare IP (`192.0.2.1`, `2001:db8::1`)
+/// or `IP/prefix` with a prefix length valid for the family (#730).
+pub fn validate_ip_cidr(s: &str) -> Result<(), String> {
+    let (addr, prefix) = match s.split_once('/') {
+        Some((a, p)) => (a, Some(p)),
+        None => (s, None),
+    };
+    let ip: std::net::IpAddr = addr
+        .parse()
+        .map_err(|_| format!("'{s}' is not an IP address or CIDR"))?;
+    if let Some(p) = prefix {
+        let max = if ip.is_ipv4() { 32 } else { 128 };
+        let ok = !p.is_empty()
+            && p.len() <= 3
+            && p.bytes().all(|b| b.is_ascii_digit())
+            && p.parse::<u8>().is_ok_and(|n| n <= max);
+        if !ok {
+            return Err(format!("'{s}' has an invalid prefix length"));
+        }
+    }
+    Ok(())
+}
+
+/// Checks the stored fields of an IDS suppression (#730): `sid` fits a
+/// Suricata SID, `suppress_type` is `src`/`dst`/`both`, and `ip_cidr`, when
+/// set, is an IP or CIDR.
+pub fn validate_suppression(
+    sid: i64,
+    suppress_type: &str,
+    ip_cidr: Option<&str>,
+) -> Result<(), String> {
+    if u32::try_from(sid).is_err() {
+        return Err(format!("sid {sid} is out of range"));
+    }
+    if SuppressType::from_str(suppress_type).is_none() {
+        return Err(format!("unknown suppress_type '{suppress_type}'"));
+    }
+    if let Some(c) = ip_cidr {
+        validate_ip_cidr(c)?;
+    }
+    Ok(())
+}
+
+/// Checks a rule action override value (#730): `None` (rule default) or one
+/// of `alert`/`drop`/`reject`/`pass`.
+pub fn validate_action_override(action: Option<&str>) -> Result<(), String> {
+    match action {
+        None => Ok(()),
+        Some(a) if IdsAction::from_str(a).is_some() => Ok(()),
+        Some(a) => Err(format!("unknown action override '{a}'")),
+    }
+}
+
 /// Result of matching a rule against a packet/flow
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IdsRuleMatch {
@@ -495,4 +548,61 @@ pub struct IdsRuleMatch {
     pub action: IdsAction,
     /// Extra key/value context carried by the rule
     pub metadata: HashMap<String, String>,
+}
+
+#[cfg(test)]
+mod validation_tests {
+    use super::*;
+
+    #[test]
+    fn ip_cidr_accepts_ips_and_networks() {
+        for ok in [
+            "192.0.2.1",
+            "10.0.0.0/8",
+            "0.0.0.0/0",
+            "2001:db8::1",
+            "2001:db8::/32",
+            "::/128",
+        ] {
+            assert!(validate_ip_cidr(ok).is_ok(), "{ok}");
+        }
+    }
+
+    #[test]
+    fn ip_cidr_rejects_junk() {
+        for bad in [
+            "",
+            "x",
+            "10.0.0.0/",
+            "10.0.0.0/33",
+            "2001:db8::/129",
+            "10.0.0.0/+8",
+            "10.0.0.0/8/8",
+            "10.0.0.0/ 8",
+            "host.example",
+            "10.0.0.0\n",
+        ] {
+            assert!(validate_ip_cidr(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn suppression_fields() {
+        assert!(validate_suppression(2_100_498, "src", Some("10.0.0.0/8")).is_ok());
+        assert!(validate_suppression(1, "both", None).is_ok());
+        assert!(validate_suppression(-1, "src", None).is_err());
+        assert!(validate_suppression(i64::from(u32::MAX) + 1, "src", None).is_err());
+        assert!(validate_suppression(1, "either", None).is_err());
+        assert!(validate_suppression(1, "dst", Some("nope")).is_err());
+    }
+
+    #[test]
+    fn action_override_values() {
+        assert!(validate_action_override(None).is_ok());
+        for a in ["alert", "drop", "reject", "pass"] {
+            assert!(validate_action_override(Some(a)).is_ok(), "{a}");
+        }
+        assert!(validate_action_override(Some("")).is_err());
+        assert!(validate_action_override(Some("DROP")).is_err());
+    }
 }
