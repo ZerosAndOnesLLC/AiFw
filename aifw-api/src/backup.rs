@@ -3503,12 +3503,63 @@ pub struct ClusterSnapshotPayload {
     pub ids_suppressions: Vec<IdsSuppressionRecord>,
 }
 
+/// Caps on the IDS sections of a peer snapshot (#730). Far above a real
+/// ruleset (~50k rules) but bounded, so a bad push can't fill the DB.
+const MAX_SNAPSHOT_IDS_OVERRIDES: usize = 200_000;
+const MAX_SNAPSHOT_IDS_SUPPRESSIONS: usize = 100_000;
+/// Row ids are UUIDs; anything much longer is not one of ours.
+const MAX_SNAPSHOT_ID_LEN: usize = 64;
+
+impl ClusterSnapshotPayload {
+    /// Checks the IDS sections of a peer snapshot (#730). `firewall` has its
+    /// own [`FirewallConfig::validate`]; these two lists are written straight
+    /// to `ids_rules` / `ids_suppressions`, so they are bounded and every
+    /// entry must hold the same invariants the IDS API enforces.
+    pub(crate) fn validate_ids(&self) -> Result<(), String> {
+        if self.ids_rule_overrides.len() > MAX_SNAPSHOT_IDS_OVERRIDES {
+            return Err(format!(
+                "ids_rule_overrides count {} exceeds cap {MAX_SNAPSHOT_IDS_OVERRIDES}",
+                self.ids_rule_overrides.len()
+            ));
+        }
+        if self.ids_suppressions.len() > MAX_SNAPSHOT_IDS_SUPPRESSIONS {
+            return Err(format!(
+                "ids_suppressions count {} exceeds cap {MAX_SNAPSHOT_IDS_SUPPRESSIONS}",
+                self.ids_suppressions.len()
+            ));
+        }
+        for ov in &self.ids_rule_overrides {
+            ov.validate()
+                .map_err(|e| format!("ids_rule_overrides[{}]: {e}", ov.id))?;
+        }
+        for s in &self.ids_suppressions {
+            s.validate()
+                .map_err(|e| format!("ids_suppressions[{}]: {e}", s.id))?;
+        }
+        Ok(())
+    }
+}
+
+fn validate_snapshot_row_id(id: &str) -> Result<(), String> {
+    if id.is_empty() || id.len() > MAX_SNAPSHOT_ID_LEN {
+        return Err("invalid id".to_string());
+    }
+    Ok(())
+}
+
 /// Minimal IDS rule override record for snapshot serialization.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IdsRuleOverride {
     pub id: String,
     pub enabled: bool,
     pub action_override: Option<String>,
+}
+
+impl IdsRuleOverride {
+    fn validate(&self) -> Result<(), String> {
+        validate_snapshot_row_id(&self.id)?;
+        aifw_common::ids::validate_action_override(self.action_override.as_deref())
+    }
 }
 
 /// Minimal IDS suppression record for snapshot serialization.
@@ -3518,6 +3569,33 @@ pub struct IdsSuppressionRecord {
     pub sid: i64,
     pub suppress_type: String,
     pub ip_cidr: Option<String>,
+}
+
+impl IdsSuppressionRecord {
+    fn validate(&self) -> Result<(), String> {
+        validate_snapshot_row_id(&self.id)?;
+        aifw_common::ids::validate_suppression(
+            self.sid,
+            &self.suppress_type,
+            self.ip_cidr.as_deref(),
+        )
+    }
+}
+
+/// Drops rows that would fail [`ClusterSnapshotPayload::validate_ids`] on the
+/// receiving peer (rows stored before #730 added API validation). Both sides
+/// hash their own export, so filtering here keeps the hashes equal instead
+/// of the peer rejecting every push.
+fn keep_valid<T>(rows: Vec<T>, what: &str, check: impl Fn(&T) -> Result<(), String>) -> Vec<T> {
+    let before = rows.len();
+    let kept: Vec<T> = rows.into_iter().filter(|r| check(r).is_ok()).collect();
+    if kept.len() != before {
+        tracing::warn!(
+            skipped = before - kept.len(),
+            "cluster snapshot: left out invalid {what} rows"
+        );
+    }
+    kept
 }
 
 /// Build a ClusterSnapshotPayload from current live state.
@@ -3559,8 +3637,12 @@ pub(crate) async fn cluster_export_payload(
 
     Ok(ClusterSnapshotPayload {
         firewall,
-        ids_rule_overrides: overrides,
-        ids_suppressions: suppressions,
+        ids_rule_overrides: keep_valid(overrides, "IDS rule override", IdsRuleOverride::validate),
+        ids_suppressions: keep_valid(
+            suppressions,
+            "IDS suppression",
+            IdsSuppressionRecord::validate,
+        ),
     })
 }
 
@@ -3591,6 +3673,9 @@ pub(crate) async fn apply_cluster_snapshot(state: &AppState, body: &str) -> anyh
     payload
         .firewall
         .validate()
+        .map_err(|e| anyhow::anyhow!("snapshot failed validation: {e}"))?;
+    payload
+        .validate_ids()
         .map_err(|e| anyhow::anyhow!("snapshot failed validation: {e}"))?;
 
     // ClusterSync keeps this node's identity — cluster_nodes (peer keys,
@@ -3692,5 +3777,103 @@ mod auto_snapshot_tests {
                 "{path} should auto-snapshot"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod snapshot_ids_validation_tests {
+    use super::*;
+
+    fn payload(
+        overrides: Vec<IdsRuleOverride>,
+        suppressions: Vec<IdsSuppressionRecord>,
+    ) -> ClusterSnapshotPayload {
+        ClusterSnapshotPayload {
+            firewall: FirewallConfig::default(),
+            ids_rule_overrides: overrides,
+            ids_suppressions: suppressions,
+        }
+    }
+
+    fn ov(action: Option<&str>) -> IdsRuleOverride {
+        IdsRuleOverride {
+            id: uuid::Uuid::new_v4().to_string(),
+            enabled: false,
+            action_override: action.map(str::to_string),
+        }
+    }
+
+    fn sup(sid: i64, kind: &str, cidr: Option<&str>) -> IdsSuppressionRecord {
+        IdsSuppressionRecord {
+            id: uuid::Uuid::new_v4().to_string(),
+            sid,
+            suppress_type: kind.to_string(),
+            ip_cidr: cidr.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn accepts_well_formed_ids_sections() {
+        let p = payload(
+            vec![ov(None), ov(Some("drop"))],
+            vec![
+                sup(2_100_498, "src", Some("10.0.0.0/8")),
+                sup(1, "both", None),
+            ],
+        );
+        assert!(p.validate_ids().is_ok());
+    }
+
+    #[test]
+    fn rejects_bad_entries() {
+        assert!(
+            payload(vec![ov(Some("nuke"))], vec![])
+                .validate_ids()
+                .is_err()
+        );
+        assert!(
+            payload(vec![], vec![sup(1, "src", Some("not-an-ip"))])
+                .validate_ids()
+                .is_err()
+        );
+        assert!(
+            payload(vec![], vec![sup(1, "sideways", None)])
+                .validate_ids()
+                .is_err()
+        );
+        assert!(
+            payload(vec![], vec![sup(-5, "src", None)])
+                .validate_ids()
+                .is_err()
+        );
+        let mut long_id = sup(1, "src", None);
+        long_id.id = "x".repeat(MAX_SNAPSHOT_ID_LEN + 1);
+        assert!(payload(vec![], vec![long_id]).validate_ids().is_err());
+    }
+
+    #[test]
+    fn rejects_oversized_lists() {
+        let p = payload(
+            vec![],
+            vec![sup(1, "src", None); MAX_SNAPSHOT_IDS_SUPPRESSIONS + 1],
+        );
+        assert!(p.validate_ids().is_err());
+        let p = payload(vec![ov(None); MAX_SNAPSHOT_IDS_OVERRIDES + 1], vec![]);
+        assert!(p.validate_ids().is_err());
+    }
+
+    #[test]
+    fn export_filter_drops_only_invalid_rows() {
+        let kept = keep_valid(
+            vec![
+                sup(1, "src", None),
+                sup(1, "src", Some("junk")),
+                sup(2, "dst", Some("::1")),
+            ],
+            "IDS suppression",
+            IdsSuppressionRecord::validate,
+        );
+        assert_eq!(kept.len(), 2);
+        assert!(kept.iter().all(|s| s.validate().is_ok()));
     }
 }

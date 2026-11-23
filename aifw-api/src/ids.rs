@@ -517,6 +517,11 @@ pub async fn update_rule(
     Json(req): Json<UpdateRuleRequest>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
     let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
+    // Validate before any write so a bad action can't leave `enabled`
+    // half-applied. Empty string = clear the override.
+    if let Some(action) = req.action_override.as_deref().filter(|a| !a.is_empty()) {
+        aifw_common::ids::validate_action_override(Some(action)).map_err(|_| bad_request())?;
+    }
     let mgr = aifw_ids::rules::manager::RulesetManager::new(state.pool.clone());
 
     if let Some(enabled) = req.enabled {
@@ -615,6 +620,9 @@ pub async fn create_suppression(
     Json(req): Json<CreateSuppressionRequest>,
 ) -> Result<(StatusCode, Json<ApiResponse<IdsSuppression>>), StatusCode> {
     let suppress_type = SuppressType::from_str(&req.suppress_type).ok_or(bad_request())?;
+    if let Some(c) = req.ip_cidr.as_deref() {
+        aifw_common::ids::validate_ip_cidr(c).map_err(|_| bad_request())?;
+    }
 
     let suppression = IdsSuppression {
         id: Uuid::new_v4(),
