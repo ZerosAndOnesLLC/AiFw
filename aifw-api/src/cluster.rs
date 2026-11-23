@@ -130,6 +130,9 @@ pub struct StatusResponse {
     pub split_brain: bool,
     /// Human-readable problems an operator should look at
     pub warnings: Vec<String>,
+    /// SHA-256 of this node's API certificate — what a peer pins. Shown so
+    /// an operator can pin a peer by hand (#731). `None` without TLS.
+    pub cert_fingerprint: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -219,7 +222,9 @@ async fn get_status(State(state): State<AppState>) -> Result<Json<StatusResponse
         warnings.push("Peer is not answering on its API".to_string());
     }
     if let Some(p) = &peer {
-        if !have_peer_key {
+        if have_peer_key && p.cert_fingerprint.is_none() {
+            warnings.push(unverified_peers_warning(std::slice::from_ref(&p.name)));
+        } else if !have_peer_key {
             warnings.push(format!(
                 "No peer key for {} — this node can't push config to it after a failover (Generate Peer Key and register it on {})",
                 p.name, p.name
@@ -238,6 +243,18 @@ async fn get_status(State(state): State<AppState>) -> Result<Json<StatusResponse
              add it or rename its node entry to the hostname"
                 .to_string(),
         );
+    }
+    if configured != ClusterRole::Standalone && inbound_key_unprovable(&state).await {
+        let registered =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM api_keys WHERE name = ?1")
+                .bind(PEER_KEY_NAME)
+                .fetch_one(&state.pool)
+                .await
+                .unwrap_or(0)
+                > 0;
+        if registered {
+            warnings.push(INBOUND_UNPROVABLE_WARNING.to_string());
+        }
     }
     if reasons.contains(&aifw_core::carp::DemoteReason::Boot) {
         warnings.push(
@@ -269,6 +286,7 @@ async fn get_status(State(state): State<AppState>) -> Result<Json<StatusResponse
         peer,
         split_brain,
         warnings,
+        cert_fingerprint: state.served_cert_fingerprint.clone(),
     }))
 }
 
@@ -782,7 +800,7 @@ async fn generate_node_key(
 #[derive(Deserialize, Default)]
 struct RepinRequest {
     /// Explicit SHA-256 fingerprint (hex, colons optional) to pin. Omitted or
-    /// empty = clear the pin and re-learn on next contact.
+    /// empty = clear the pin; the peer must prove its certificate again (#731).
     #[serde(default)]
     fingerprint: Option<String>,
 }
@@ -790,7 +808,7 @@ struct RepinRequest {
 /// Reset or set the pinned TLS certificate fingerprint of a peer (#317).
 /// Use after the peer's API certificate changed by hand (self-signed
 /// regeneration, manual cert import) — replication logs a pin mismatch
-/// until this is done. Cert pushes and first contact manage pins on their own.
+/// until this is done. Cert pushes and first contact manage pins on their own (via certificate proof, #731).
 async fn repin_node(
     State(s): State<AppState>,
     Path(id): Path<Uuid>,
@@ -1161,13 +1179,18 @@ async fn snapshot_force(State(s): State<AppState>) -> StatusCode {
     };
 
     let url = format!("{}/api/v1/cluster/snapshot", peer.api_base());
-    // #317: pinned to the master's certificate (learned on first contact).
+    // #317/#731: pinned to the master's certificate, proven on first contact.
     let client = match s
         .cluster_engine
         .peer_client(&peer, std::time::Duration::from_secs(15))
+        .await
     {
         Ok(c) => c,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR,
+        // #731: the peer couldn't prove its certificate — nothing was sent.
+        Err(e) => {
+            tracing::warn!(peer = %peer.address, error = %e, "snapshot force: peer certificate not verified");
+            return StatusCode::BAD_GATEWAY;
+        }
     };
 
     let data = match client
@@ -1176,13 +1199,10 @@ async fn snapshot_force(State(s): State<AppState>) -> StatusCode {
         .send()
         .await
     {
-        Ok(r) => {
-            s.cluster_engine.learn_peer_cert(&peer, &r).await;
-            match r.text().await {
-                Ok(s) => s,
-                Err(_) => return StatusCode::BAD_GATEWAY,
-            }
-        }
+        Ok(r) => match r.text().await {
+            Ok(s) => s,
+            Err(_) => return StatusCode::BAD_GATEWAY,
+        },
         Err(_) => return StatusCode::BAD_GATEWAY,
     };
 
@@ -1375,7 +1395,7 @@ async fn cert_push(
             aifw_core::ipsec::on_acme_cert_renewed(&s.pool, r.cert_id).await;
             // #317: the master just renewed — its own API certificate may
             // change with it. Drop our pin(s) on Primary nodes so the next
-            // call re-learns instead of failing on a stale fingerprint.
+            // call re-proves it instead of failing on a stale fingerprint.
             match s
                 .cluster_engine
                 .clear_pins_for_role(ClusterRole::Primary)
@@ -1397,6 +1417,35 @@ async fn cert_push(
 }
 
 // ============================================================
+// Certificate proof (#731)
+// ============================================================
+
+/// `POST /api/v1/cluster/pin-proof` (public). A peer that has no pin for
+/// this node yet sends a random nonce; we answer with our certificate
+/// fingerprint and `HMAC(inbound peer key, nonce ‖ fingerprint)`. The peer
+/// pins only if the MAC checks out and the fingerprint is the certificate
+/// it actually connected to — so it never sends its key to an impostor.
+/// 404 when this node can't prove anything (no TLS, or no inbound key
+/// stored since #731 — re-register the peer key to fix).
+pub(crate) async fn pin_proof(
+    State(s): State<AppState>,
+    Json(r): Json<aifw_core::peer_tls::PinProofRequest>,
+) -> Result<Json<aifw_core::peer_tls::PinProof>, StatusCode> {
+    let Some(fp) = s.served_cert_fingerprint.as_deref() else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    match s.cluster_engine.pin_proof(&r.nonce, fp).await {
+        Ok(Some(proof)) => Ok(Json(proof)),
+        Ok(None) => Err(StatusCode::NOT_FOUND),
+        Err(aifw_common::AifwError::Validation(_)) => Err(StatusCode::BAD_REQUEST),
+        Err(e) => {
+            tracing::warn!(error = %e, "pin_proof");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+// ============================================================
 // Health summary (D2 — onboarding warnings)
 // ============================================================
 
@@ -1407,6 +1456,12 @@ struct HealthSummary {
     /// SEC-H12: true when this node has no inbound peer key registered under
     /// the reserved name, so a master's snapshot/cert push would be refused.
     inbound_peer_key_missing: bool,
+    /// #731: peers we hold a key for but whose certificate isn't pinned yet.
+    /// Calls to them are held until they prove their certificate.
+    unverified_peers: Vec<String>,
+    /// #731: the inbound peer key was registered before certificate proofs,
+    /// so this node can't prove its certificate — re-register it.
+    inbound_peer_key_unprovable: bool,
     warnings: Vec<String>,
 }
 
@@ -1420,6 +1475,7 @@ async fn health_summary(State(s): State<AppState>) -> Result<Json<HealthSummary>
     let local_role = ClusterRole::parse(&local_role_str).unwrap_or(ClusterRole::Standalone);
 
     let mut missing: Vec<String> = Vec::new();
+    let mut unverified: Vec<String> = Vec::new();
     for node in nodes.iter().filter(|n| n.role != local_role) {
         if s.cluster_engine
             .peer_api_key(node.id)
@@ -1429,6 +1485,8 @@ async fn health_summary(State(s): State<AppState>) -> Result<Json<HealthSummary>
             .is_none()
         {
             missing.push(node.name.clone());
+        } else if node.cert_fingerprint.is_none() {
+            unverified.push(node.name.clone());
         }
     }
 
@@ -1450,7 +1508,15 @@ async fn health_summary(State(s): State<AppState>) -> Result<Json<HealthSummary>
             .unwrap_or(0)
             == 0;
 
+    let inbound_peer_key_unprovable = !inbound_peer_key_missing && inbound_key_unprovable(&s).await;
+
     let mut warnings: Vec<String> = Vec::new();
+    if !unverified.is_empty() {
+        warnings.push(unverified_peers_warning(&unverified));
+    }
+    if inbound_peer_key_unprovable && local_role != ClusterRole::Standalone {
+        warnings.push(INBOUND_UNPROVABLE_WARNING.to_string());
+    }
     if !missing.is_empty() {
         warnings.push(format!(
             "Replication will not flow to: {}. Click 'Generate Peer Key' on each node, copy the key, and register it on the peer.",
@@ -1472,8 +1538,25 @@ async fn health_summary(State(s): State<AppState>) -> Result<Json<HealthSummary>
         missing_peer_keys: missing,
         loopback_key_missing,
         inbound_peer_key_missing,
+        unverified_peers: unverified,
+        inbound_peer_key_unprovable,
         warnings,
     }))
+}
+
+/// #731: an inbound peer key is registered (api_keys row) but no sealed
+/// copy exists — it was registered before certificate proofs.
+async fn inbound_key_unprovable(s: &AppState) -> bool {
+    matches!(s.cluster_engine.inbound_peer_key().await, Ok(None))
+}
+
+const INBOUND_UNPROVABLE_WARNING: &str = "This node's inbound peer key was registered before certificate verification, so the master can't verify this node's certificate the next time it needs to pin it (first contact, or after a certificate push). Re-register the same peer key here via 'Register Peer Key'.";
+
+fn unverified_peers_warning(names: &[String]) -> String {
+    format!(
+        "Certificate not verified yet for: {}. Calls to them are held until they prove their certificate with the peer key. If this persists, re-register this node's peer key on them (they need this AiFw version), or pin by hand: copy the certificate fingerprint from the peer's HA page (or `aifw cluster status` there) into Set pin… in the Nodes table, or `aifw cluster nodes repin <id> --fingerprint <sha256>`.",
+        names.join(", ")
+    )
 }
 
 // ============================================================
@@ -1551,6 +1634,16 @@ async fn register_peer_key(
             uid
         }
     };
+
+    // #731: keep a sealed copy so this node can prove its certificate to
+    // the master before the master sends the key anywhere.
+    s.cluster_engine
+        .set_inbound_peer_key(&key)
+        .await
+        .map_err(|e| {
+            tracing::warn!(?e, "register_peer_key: store inbound key");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     // A node accepts pushes from one master — replace any prior inbound key.
     let _ = sqlx::query("DELETE FROM api_keys WHERE name = ?1")

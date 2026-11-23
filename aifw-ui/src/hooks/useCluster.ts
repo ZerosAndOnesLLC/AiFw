@@ -132,10 +132,12 @@ export function useCluster() {
     }
   };
 
-  const repinPeer = async (nodeId: string) => {
+  /// #317/#731: without `fingerprint`, forget the pin (the peer must prove
+  /// its certificate again); with one, pin it by hand.
+  const repinPeer = async (nodeId: string, fingerprint?: string) => {
     setBusy(true);
     try {
-      await repinNode(nodeId);
+      await repinNode(nodeId, fingerprint);
       await reload();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to reset peer TLS pin");

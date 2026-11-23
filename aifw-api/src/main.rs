@@ -194,6 +194,10 @@ pub struct AppState {
     /// the session cookies (SEC-M7 #304). Set from `!args.no_tls` in `main`;
     /// defaults to `false` in tests.
     pub tls_enabled: bool,
+    /// SHA-256 of the API certificate this process serves (`--tls-cert`,
+    /// loaded once at startup). Answers HA certificate proofs (#731);
+    /// `None` without TLS.
+    pub served_cert_fingerprint: Option<String>,
     /// Ring buffer of deflate-compressed `WsHistoryEntry` JSON frames
     /// (PERF-M5). ~2-3 KB of repetitive JSON per tick compresses 4-8x, so a
     /// 1800-entry ring costs ~1 MB instead of ~5 MB. Compress/decompress
@@ -1137,6 +1141,7 @@ async fn create_state_from_db(
         cluster_enabled,
         cluster_events,
         tls_enabled: false,
+        served_cert_fingerprint: None,
         metrics_history: Arc::new(RwLock::new(VecDeque::with_capacity(history_max.min(86400)))),
         metrics_history_max: Arc::new(std::sync::atomic::AtomicUsize::new(history_max)),
         redis: None,
@@ -1989,6 +1994,15 @@ async fn async_main() -> anyhow::Result<()> {
 
     let tls_enabled = !args.no_tls;
     state.tls_enabled = tls_enabled;
+    if tls_enabled {
+        // The cert must exist before it can be fingerprinted for HA
+        // certificate proofs (#731); the server loads the same file below.
+        ensure_tls_cert(&args.tls_cert, &args.tls_key)?;
+        state.served_cert_fingerprint = aifw_core::peer_tls::fingerprint_pem_file(&args.tls_cert);
+        if state.served_cert_fingerprint.is_none() {
+            warn!(path = %args.tls_cert.display(), "could not fingerprint the API certificate; HA peers can't verify this node");
+        }
+    }
     let app = build_router(
         state,
         args.ui_dir.as_deref(),
@@ -2041,7 +2055,6 @@ async fn async_main() -> anyhow::Result<()> {
             } => warn!("shutdown drain window elapsed; closing remaining connections"),
         }
     } else {
-        ensure_tls_cert(&args.tls_cert, &args.tls_key)?;
         let tls_config =
             axum_server::tls_rustls::RustlsConfig::from_pem_file(&args.tls_cert, &args.tls_key)
                 .await?;

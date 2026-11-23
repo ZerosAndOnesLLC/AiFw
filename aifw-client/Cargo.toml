@@ -11,6 +11,8 @@ reqwest = { workspace = true, features = ["multipart", "stream"] }
 rustls = { workspace = true }
 rustls-pemfile = { workspace = true }
 sha2 = { workspace = true }
+hmac = { workspace = true }
+getrandom = { workspace = true }
 hex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -27,6 +29,7 @@ rcgen = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util"] }
 tokio-rustls = { workspace = true }
 axum = { workspace = true }
+axum-server = { version = "0.9", features = ["tls-rustls"] }
 
 [lints]
 workspace = true

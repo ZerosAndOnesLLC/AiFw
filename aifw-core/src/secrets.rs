@@ -325,6 +325,7 @@ pub const SEALED_COLUMNS: &[(&str, &str, &str)] = &[
     ("s3_backup_config", "secrets_passphrase", "id"),
     ("smtp_notify_config", "password", "id"),
     ("cluster_nodes", "peer_api_key", "id"),
+    ("cluster_inbound_peer_key", "peer_key", "id"),
     ("carp_vips", "password", "id"),
     ("wg_tunnels", "private_key", "id"),
     ("wg_peers", "preshared_key", "id"),

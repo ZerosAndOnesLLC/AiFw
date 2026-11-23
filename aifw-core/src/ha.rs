@@ -15,7 +15,14 @@ pub struct ClusterEngine {
     pool: SqlitePool,
     pf: Arc<dyn PfBackend>,
     anchor: String,
+    /// Last time a failed certificate proof was logged at warn, per peer
+    /// (#731). Background tasks retry every few seconds; one warning per
+    /// [`PIN_WARN_EVERY`] is enough.
+    pin_warned: std::sync::Mutex<std::collections::HashMap<Uuid, std::time::Instant>>,
 }
+
+/// How often a peer whose certificate can't be proven is logged at warn.
+const PIN_WARN_EVERY: std::time::Duration = std::time::Duration::from_secs(300);
 
 impl ClusterEngine {
     /// Create the engine over an existing pool and pf backend, targeting the `aifw-ha` anchor
@@ -24,6 +31,7 @@ impl ClusterEngine {
             pool,
             pf,
             anchor: aifw_common::anchors::HA.to_string(),
+            pin_warned: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -536,43 +544,123 @@ impl ClusterEngine {
     // Peer TLS pinning (#317)
     // ============================================================
 
-    /// HTTPS client for calling `node`, pinned to its stored certificate
-    /// fingerprint. With no pin yet the client accepts any certificate and
-    /// exposes the observed one so [`Self::learn_peer_cert`] can pin it.
-    pub fn peer_client(
+    /// HTTPS client for calling `node`, always pinned to its certificate
+    /// (#317). With no pin stored yet, the peer must first prove its
+    /// certificate with the shared peer key
+    /// ([`crate::peer_tls::prove_peer_certificate`], #731) and the proven
+    /// fingerprint is stored. Fails closed: if the peer can't prove its
+    /// certificate no client is returned, so no peer key, snapshot or
+    /// private key is ever sent over an unverified connection.
+    pub async fn peer_client(
         &self,
         node: &ClusterNode,
         timeout: std::time::Duration,
     ) -> Result<reqwest::Client> {
-        crate::peer_tls::client_for(
-            node.cert_fingerprint.as_deref(),
+        let fp = match node.cert_fingerprint.clone() {
+            Some(fp) => fp,
+            None => self.prove_and_pin(node, timeout).await?,
+        };
+        crate::peer_tls::client_for(Some(&fp), &node.address.to_string(), timeout)
+            .map_err(|e| AifwError::Other(e.to_string()))
+    }
+
+    /// First contact (or re-pin) with `node`: have it prove its certificate
+    /// and store the pin (#731).
+    async fn prove_and_pin(
+        &self,
+        node: &ClusterNode,
+        timeout: std::time::Duration,
+    ) -> Result<String> {
+        let Some(key) = self.peer_api_key(node.id).await? else {
+            return Err(AifwError::Validation(format!(
+                "no peer key for {}; its certificate can't be verified",
+                node.name
+            )));
+        };
+        let fp = match crate::peer_tls::prove_peer_certificate(
+            &node.api_base(),
+            &key,
             &node.address.to_string(),
             timeout,
         )
-        .map_err(|e| AifwError::Other(e.to_string()))
+        .await
+        {
+            Ok(fp) => fp,
+            Err(e) => {
+                self.log_pin_failure(node, &e.0);
+                return Err(AifwError::Other(e.0));
+            }
+        };
+        self.set_peer_cert_fingerprint(node.id, Some(&fp)).await?;
+        tracing::info!(
+            peer = %node.address,
+            pin = %crate::peer_tls::short(&fp),
+            "ha: peer proved its certificate; pinned"
+        );
+        Ok(fp)
     }
 
-    /// Trust-on-first-use: if `node` has no pin yet, record the certificate
-    /// fingerprint observed on `resp` (a successful call made through
-    /// [`Self::peer_client`]). No-op when already pinned. Best-effort — the
-    /// call that produced `resp` already succeeded.
-    pub async fn learn_peer_cert(&self, node: &ClusterNode, resp: &reqwest::Response) {
-        if node.cert_fingerprint.is_some() {
-            return;
+    fn log_pin_failure(&self, node: &ClusterNode, reason: &str) {
+        let now = std::time::Instant::now();
+        let mut warned = self
+            .pin_warned
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let due = warned
+            .get(&node.id)
+            .is_none_or(|t| now.duration_since(*t) >= PIN_WARN_EVERY);
+        if due {
+            warned.insert(node.id, now);
+            tracing::warn!(peer = %node.address, reason, "ha: peer certificate not verified; holding calls to it");
+        } else {
+            tracing::debug!(peer = %node.address, reason, "ha: peer certificate not verified");
         }
-        let Some(fp) = crate::peer_tls::observed_fingerprint(resp) else {
-            return;
+    }
+
+    /// Store (sealed) the inbound peer key this node was given, replacing
+    /// any previous one, so it can answer certificate proofs (#731). The
+    /// matching `api_keys` row only holds a hash.
+    pub async fn set_inbound_peer_key(&self, key: &str) -> Result<()> {
+        let sealed = crate::secrets::seal(key).map_err(crate::secrets::to_common)?;
+        sqlx::query(
+            "INSERT INTO cluster_inbound_peer_key (id, peer_key) VALUES (1, ?1) \
+             ON CONFLICT(id) DO UPDATE SET peer_key = excluded.peer_key, \
+             created_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')",
+        )
+        .bind(&sealed)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// The inbound peer key (plaintext), if one was registered since #731.
+    pub async fn inbound_peer_key(&self) -> Result<Option<String>> {
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT peer_key FROM cluster_inbound_peer_key WHERE id = 1")
+                .fetch_optional(&self.pool)
+                .await?;
+        crate::secrets::open_opt(row.map(|(k,)| k)).map_err(crate::secrets::to_common)
+    }
+
+    /// Answer a certificate proof request (#731): `HMAC(inbound peer key,
+    /// nonce ‖ served_fingerprint)`. `None` when this node has no stored
+    /// inbound key (none registered, or registered before #731).
+    pub async fn pin_proof(
+        &self,
+        nonce: &str,
+        served_fingerprint: &str,
+    ) -> Result<Option<crate::peer_tls::PinProof>> {
+        if !crate::peer_tls::is_valid_nonce(nonce) {
+            return Err(AifwError::Validation("nonce must be 64 hex chars".into()));
+        }
+        let Some(key) = self.inbound_peer_key().await? else {
+            return Ok(None);
         };
-        match self.set_peer_cert_fingerprint(node.id, Some(&fp)).await {
-            Ok(()) => tracing::info!(
-                peer = %node.address,
-                pin = %crate::peer_tls::short(&fp),
-                "ha: pinned peer certificate on first contact"
-            ),
-            Err(e) => {
-                tracing::warn!(peer = %node.address, error = %e, "ha: could not store peer pin")
-            }
-        }
+        let fp = served_fingerprint.to_ascii_lowercase();
+        Ok(Some(crate::peer_tls::PinProof {
+            mac: crate::peer_tls::pin_proof_mac(&key, nonce, &fp),
+            fingerprint: fp,
+        }))
     }
 
     /// Set (or clear, with `None`) the pinned certificate fingerprint for a
@@ -590,11 +678,11 @@ impl ClusterEngine {
     }
 
     /// Clear the pins of every node with `role` so the next contact
-    /// re-learns them. Used around a certificate distribution (cert push):
+    /// proves them again (#731). Used around a certificate distribution (cert push):
     /// the peer's API certificate is about to change, and whether it will
     /// serve exactly the pushed chain depends on its own ACME-export
-    /// settings, so a fresh TOFU is safer than guessing. Returns the number
-    /// of nodes cleared.
+    /// settings, so re-proving it (#731) is safer than guessing. Returns the
+    /// number of nodes cleared.
     pub async fn clear_pins_for_role(&self, role: ClusterRole) -> Result<usize> {
         let mut n = 0;
         for node in self.list_nodes().await? {

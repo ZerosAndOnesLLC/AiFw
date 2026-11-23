@@ -127,7 +127,9 @@ export default function ClusterPage() {
 
       {/* SEC-H12: register the inbound peer key so the master can push here */}
       <PeerKeyRegistrationCard
-        highlight={summary?.inbound_peer_key_missing}
+        highlight={
+          summary?.inbound_peer_key_missing || summary?.inbound_peer_key_unprovable
+        }
         busy={busy}
         peerKeyMsg={peerKeyMsg}
         onDismissMsg={dismissPeerKeyMsg}

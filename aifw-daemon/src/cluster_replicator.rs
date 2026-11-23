@@ -103,8 +103,13 @@ impl ClusterReplicator {
                 Some(k) => k,
                 None => continue,
             };
-            // Pinned to this peer's certificate (#317).
-            let client = self.engine.peer_client(peer, Duration::from_secs(15))?;
+            // Pinned to this peer's proven certificate (#317, #731).
+            let client = match self.engine.peer_client(peer, Duration::from_secs(15)).await {
+                Ok(c) => c,
+                // Not proven yet — logged (throttled) by the engine; skip
+                // this peer rather than abort the whole round.
+                Err(_) => continue,
+            };
 
             // Cheap hash probe — we don't need the full snapshot from the peer,
             // only whether it matches what we already have.
@@ -115,10 +120,7 @@ impl ClusterReplicator {
                 .send()
                 .await
             {
-                Ok(r) => {
-                    self.engine.learn_peer_cert(peer, &r).await;
-                    r.text().await.unwrap_or_default().trim().to_string()
-                }
+                Ok(r) => r.text().await.unwrap_or_default().trim().to_string(),
                 Err(e) => {
                     tracing::debug!(
                         error = %e,
