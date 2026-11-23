@@ -55,6 +55,7 @@ async fn test_cluster_node_repin() {
     assert!(
         engine
             .peer_client(&n, std::time::Duration::from_secs(1))
+            .await
             .is_ok()
     );
 
@@ -494,4 +495,198 @@ async fn operator_demotion_endpoints_record_history() {
     for c in ["maintenance_on", "operator_demote", "operator_promote"] {
         assert!(causes.iter().any(|x| x == c), "{c} missing from {causes:?}");
     }
+}
+
+/// #731: the public pin-proof endpoint proves this node's certificate with
+/// the sealed inbound peer key, and only once one is registered.
+#[tokio::test]
+async fn test_cluster_pin_proof_endpoint() {
+    let mut state = crate::create_app_state_in_memory(plain_auth_settings())
+        .await
+        .unwrap();
+    let served = "ab".repeat(32);
+    state.served_cert_fingerprint = Some(served.clone());
+    let engine = state.cluster_engine.clone();
+    let pool = state.pool.clone();
+    let server = TestServer::new(crate::build_router(state, None, "*", false));
+    let token = create_user_and_login(&server).await;
+    let nonce = aifw_core::peer_tls::new_nonce().unwrap();
+
+    // No inbound key yet → 404, and no credential is needed to ask.
+    server
+        .post("/api/v1/cluster/pin-proof")
+        .json(&json!({ "nonce": nonce }))
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+
+    let key = "k1".repeat(32);
+    server
+        .post("/api/v1/cluster/peer-key")
+        .authorization_bearer(&token)
+        .json(&json!({ "key": key }))
+        .await
+        .assert_status_ok();
+
+    // Stored sealed, never as plaintext.
+    let raw: String = sqlx::query_scalar("SELECT peer_key FROM cluster_inbound_peer_key")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(raw.starts_with("enc:v1:"), "inbound key must be sealed");
+    assert_eq!(
+        engine.inbound_peer_key().await.unwrap().as_deref(),
+        Some(key.as_str())
+    );
+
+    // Valid proof over the served certificate.
+    let resp = server
+        .post("/api/v1/cluster/pin-proof")
+        .json(&json!({ "nonce": nonce }))
+        .await;
+    resp.assert_status_ok();
+    let proof: aifw_core::peer_tls::PinProof = resp.json();
+    assert_eq!(proof.fingerprint, served);
+    assert!(aifw_core::peer_tls::verify_pin_proof(
+        &key, &nonce, &served, &proof
+    ));
+    assert!(!aifw_core::peer_tls::verify_pin_proof(
+        &"z".repeat(64),
+        &nonce,
+        &served,
+        &proof
+    ));
+
+    // Malformed nonce → 400.
+    server
+        .post("/api/v1/cluster/pin-proof")
+        .json(&json!({ "nonce": "short" }))
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+
+    // Re-registering replaces the stored key.
+    let key2 = "k2".repeat(32);
+    server
+        .post("/api/v1/cluster/peer-key")
+        .authorization_bearer(&token)
+        .json(&json!({ "key": key2 }))
+        .await
+        .assert_status_ok();
+    assert_eq!(
+        engine.inbound_peer_key().await.unwrap().as_deref(),
+        Some(key2.as_str())
+    );
+}
+
+/// #731: without TLS there is no certificate to prove → 404.
+#[tokio::test]
+async fn test_cluster_pin_proof_without_tls() {
+    let (server, _) = test_app().await;
+    server
+        .post("/api/v1/cluster/pin-proof")
+        .json(&json!({ "nonce": "0a".repeat(32) }))
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+}
+
+/// #731: an unpinned peer that can't prove its certificate gets no client
+/// (so no credential is sent), and its pin stays empty.
+#[tokio::test]
+async fn test_peer_client_fails_closed_for_unproven_peer() {
+    let state = crate::create_app_state_in_memory(plain_auth_settings())
+        .await
+        .unwrap();
+    let engine = state.cluster_engine.clone();
+
+    // A local port with nothing listening: connection refused, fast.
+    let port = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let mut node = aifw_common::ClusterNode::new(
+        "peer-x".into(),
+        "127.0.0.1".parse().unwrap(),
+        aifw_common::ClusterRole::Secondary,
+    );
+    node.api_port = port;
+    let node = engine.add_node(node).await.unwrap();
+
+    // No peer key → refused before any network call.
+    assert!(
+        engine
+            .peer_client(&node, std::time::Duration::from_secs(1))
+            .await
+            .is_err()
+    );
+
+    // With a key but no proof → still refused, nothing pinned.
+    engine.generate_peer_api_key(node.id).await.unwrap();
+    assert!(
+        engine
+            .peer_client(&node, std::time::Duration::from_secs(1))
+            .await
+            .is_err()
+    );
+    let n = engine
+        .list_nodes()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|n| n.id == node.id)
+        .unwrap();
+    assert!(n.cert_fingerprint.is_none());
+}
+
+/// #731: health summary flags peers whose certificate isn't verified and an
+/// inbound key registered before certificate proofs.
+#[tokio::test]
+async fn test_cluster_health_summary_pin_flags() {
+    let state = crate::create_app_state_in_memory(plain_auth_settings())
+        .await
+        .unwrap();
+    let engine = state.cluster_engine.clone();
+    let pool = state.pool.clone();
+    let server = TestServer::new(crate::build_router(state, None, "*", false));
+    let token = create_user_and_login(&server).await;
+
+    let node: Value = server
+        .post("/api/v1/cluster/nodes")
+        .authorization_bearer(&token)
+        .json(&json!({"name": "peer-b", "address": "10.9.9.2", "role": "secondary"}))
+        .await
+        .json();
+    let id: uuid::Uuid = node["id"].as_str().unwrap().parse().unwrap();
+    engine.generate_peer_api_key(id).await.unwrap();
+
+    server
+        .post("/api/v1/cluster/peer-key")
+        .authorization_bearer(&token)
+        .json(&json!({ "key": "k".repeat(64) }))
+        .await
+        .assert_status_ok();
+
+    let s: Value = server
+        .get("/api/v1/cluster/health-summary")
+        .authorization_bearer(&token)
+        .await
+        .json();
+    assert_eq!(s["unverified_peers"], json!(["peer-b"]), "{s}");
+    assert_eq!(s["inbound_peer_key_unprovable"], json!(false));
+
+    // Pinned → no longer listed.
+    engine
+        .set_peer_cert_fingerprint(id, Some(&"11".repeat(32)))
+        .await
+        .unwrap();
+    // Legacy registration: api_keys row without the sealed copy.
+    sqlx::query("DELETE FROM cluster_inbound_peer_key")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let s: Value = server
+        .get("/api/v1/cluster/health-summary")
+        .authorization_bearer(&token)
+        .await
+        .json();
+    assert_eq!(s["unverified_peers"], json!([]), "{s}");
+    assert_eq!(s["inbound_peer_key_unprovable"], json!(true));
 }

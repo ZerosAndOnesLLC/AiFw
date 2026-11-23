@@ -94,6 +94,8 @@ export type ClusterStatus = {
   peer: Node | null;
   split_brain: boolean;
   warnings: string[];
+  /** #731: this node's API certificate SHA-256 — what peers pin */
+  cert_fingerprint: string | null;
 };
 
 export type HealthRunResult = {
@@ -127,6 +129,10 @@ export type HealthSummary = {
   missing_peer_keys: string[];
   loopback_key_missing: boolean;
   inbound_peer_key_missing: boolean;
+  /** #731: peers we hold a key for whose certificate isn't verified yet */
+  unverified_peers: string[];
+  /** #731: inbound key registered before certificate proofs — re-register it */
+  inbound_peer_key_unprovable: boolean;
   warnings: string[];
 };
 

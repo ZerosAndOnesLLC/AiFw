@@ -41,6 +41,12 @@ pub(crate) fn public_routes() -> Router<AppState> {
             get(routes::oauth_login_options),
         )
         .route("/api/v1/auth/register", post(routes::register))
+        // HA certificate proof (#731): a peer calls this before it sends any
+        // credential, so it must be reachable unauthenticated.
+        .route(
+            aifw_core::peer_tls::PIN_PROOF_PATH,
+            post(crate::cluster::pin_proof),
+        )
 }
 
 pub(crate) fn self_service() -> Router<AppState> {

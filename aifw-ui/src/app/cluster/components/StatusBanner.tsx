@@ -66,6 +66,14 @@ export default function StatusBanner() {
           </div>
         )}
       </div>
+      {s.cert_fingerprint && s.role !== "standalone" && (
+        <div className="mt-2 text-xs opacity-70">
+          This node&apos;s certificate:{" "}
+          <span className="font-mono break-all select-all" title="Paste into Set pin… on the peer if it can't verify this node automatically">
+            {s.cert_fingerprint}
+          </span>
+        </div>
+      )}
       {s.warnings.length > 0 && (
         <ul className="mt-2 text-xs list-disc pl-5 space-y-0.5">
           {s.warnings.map((w) => (

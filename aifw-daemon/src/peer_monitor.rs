@@ -96,28 +96,16 @@ impl PeerMonitor {
     async fn probe(&self, peer: &ClusterNode) -> (NodeHealth, Option<String>, Option<String>) {
         let key = match self.engine.peer_api_key(peer.id).await {
             Ok(Some(k)) => k,
-            _ => {
-                // No key for this peer: TCP reachability is all we can say.
-                let addr = std::net::SocketAddr::new(peer.address, peer.api_port);
-                let up = tokio::time::timeout(
-                    Duration::from_secs(3),
-                    tokio::net::TcpStream::connect(addr),
-                )
-                .await
-                .is_ok_and(|r| r.is_ok());
-                let health = if up {
-                    NodeHealth::Degraded
-                } else {
-                    NodeHealth::Unreachable
-                };
-                return (health, None, None);
-            }
+            // No key for this peer: TCP reachability is all we can say.
+            _ => return (tcp_health(peer).await, None, None),
         };
-        let client = match self.engine.peer_client(peer, Duration::from_secs(4)) {
+        let client = match self.engine.peer_client(peer, Duration::from_secs(4)).await {
             Ok(c) => c,
             Err(e) => {
-                tracing::warn!(peer = %peer.name, error = %e, "ha: peer client");
-                return (NodeHealth::Unreachable, None, None);
+                // Certificate not proven (#731; warned, throttled, by the
+                // engine) — nothing is sent, so again only TCP reachability.
+                tracing::debug!(peer = %peer.name, error = %e, "ha: peer client");
+                return (tcp_health(peer).await, None, None);
             }
         };
         let url = format!("{}/api/v1/cluster/peer-state", peer.api_base());
@@ -127,13 +115,10 @@ impl PeerMonitor {
             .send()
             .await
         {
-            Ok(r) if r.status().is_success() => {
-                self.engine.learn_peer_cert(peer, &r).await;
-                match r.json::<PeerState>().await {
-                    Ok(p) => (NodeHealth::Healthy, Some(p.state), Some(p.software_version)),
-                    Err(_) => (NodeHealth::Degraded, None, None),
-                }
-            }
+            Ok(r) if r.status().is_success() => match r.json::<PeerState>().await {
+                Ok(p) => (NodeHealth::Healthy, Some(p.state), Some(p.software_version)),
+                Err(_) => (NodeHealth::Degraded, None, None),
+            },
             Ok(r) => {
                 tracing::debug!(peer = %peer.name, status = %r.status(), "ha: peer refused probe");
                 (NodeHealth::Degraded, None, None)
@@ -151,5 +136,19 @@ fn canonical(aggregate: &str) -> String {
         "master" => "primary".into(),
         "backup" => "secondary".into(),
         other => other.into(),
+    }
+}
+
+/// Degraded when the peer's API port accepts a TCP connection (up, but we
+/// can't talk to it authenticated), Unreachable otherwise.
+async fn tcp_health(peer: &ClusterNode) -> NodeHealth {
+    let addr = std::net::SocketAddr::new(peer.address, peer.api_port);
+    let up = tokio::time::timeout(Duration::from_secs(3), tokio::net::TcpStream::connect(addr))
+        .await
+        .is_ok_and(|r| r.is_ok());
+    if up {
+        NodeHealth::Degraded
+    } else {
+        NodeHealth::Unreachable
     }
 }

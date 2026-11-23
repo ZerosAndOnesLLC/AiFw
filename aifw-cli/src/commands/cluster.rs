@@ -142,7 +142,7 @@ pub enum NodesCmd {
         yes: bool,
     },
     /// Reset (or set) the pinned TLS certificate fingerprint of a peer.
-    /// Without --fingerprint the pin is cleared and re-learned on next contact.
+    /// Without --fingerprint the pin is cleared; the peer must prove its certificate again (#731).
     Repin {
         id: String,
         /// SHA-256 fingerprint of the peer's certificate (64 hex chars, colons ok)
@@ -242,6 +242,7 @@ pub async fn run(ctx: &mut Ctx, cmd: ClusterCmd) -> anyhow::Result<()> {
                     ("Maintenance", "/demotion/maintenance"),
                     ("Demotion level", "/demotion/level"),
                     ("Demotion reasons", "/_reasons"),
+                    ("Certificate fingerprint", "/cert_fingerprint"),
                 ],
             )?;
             if let Some(w) = s["warnings"].as_array().filter(|w| !w.is_empty()) {
@@ -388,7 +389,7 @@ pub async fn run(ctx: &mut Ctx, cmd: ClusterCmd) -> anyhow::Result<()> {
                 match v.get("cert_fingerprint").and_then(Value::as_str) {
                     Some(fp) => ctx.io.println(&format!("Node {id} pinned to {fp}")),
                     None => ctx.io.println(&format!(
-                        "Node {id} pin cleared — it will be re-learned on the next contact."
+                        "Node {id} pin cleared — the peer must prove its certificate on the next contact."
                     )),
                 }
                 Ok(())

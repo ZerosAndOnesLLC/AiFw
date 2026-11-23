@@ -10,12 +10,13 @@
 //! stream (which carries the whole config, secrets included). Calls now
 //! pin the leaf certificate by SHA-256 fingerprint:
 //!
-//! * **Peers** — the pin lives in `cluster_nodes.cert_fingerprint`. It is
-//!   learned on first successful contact (trust-on-first-use, like an SSH
-//!   `known_hosts` entry) and enforced from then on. Cert distribution via
-//!   `cluster/cert-push` updates the pins on both sides, and an operator
-//!   can clear a pin (`POST /cluster/nodes/{id}/repin`, `aifw cluster
-//!   repin`) after a manual certificate change.
+//! * **Peers** — the pin lives in `cluster_nodes.cert_fingerprint`. With no
+//!   pin yet, the peer must first prove its certificate with the shared peer
+//!   key ([`prove_peer_certificate`], #731): no credential is sent until it
+//!   has, so first contact is not a trust-on-first-use window. The pin is
+//!   enforced from then on. A cert push (`cluster/cert-push`) clears the
+//!   affected pin so it is proven again, and an operator can clear or set a
+//!   pin (`POST /cluster/nodes/{id}/repin`, `aifw cluster nodes repin`).
 //! * **Loopback** (aifw-daemon → local aifw-api) — pinned to the certificate
 //!   file the API serves (`/usr/local/etc/aifw/tls/cert.pem`); the client is
 //!   rebuilt when that file changes, so ACME renewals and self-signed
@@ -68,6 +69,134 @@ pub fn observed_fingerprint(resp: &reqwest::Response) -> Option<String> {
         .get::<reqwest::tls::TlsInfo>()
         .and_then(|t| t.peer_certificate())
         .map(fingerprint_der)
+}
+
+// ============================================================
+// Certificate proof for first contact (#731)
+// ============================================================
+
+/// Public endpoint a peer answers to prove its certificate.
+pub const PIN_PROOF_PATH: &str = "/api/v1/cluster/pin-proof";
+
+/// Domain label mixed into the proof MAC so it can't be confused with any
+/// other use of the peer key.
+const PIN_PROOF_LABEL: &[u8] = b"aifw-pin-proof-v1";
+
+/// Request body for [`PIN_PROOF_PATH`]: a fresh random nonce (64 hex chars).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PinProofRequest {
+    pub nonce: String,
+}
+
+/// Response from [`PIN_PROOF_PATH`]: the fingerprint of the certificate the
+/// peer serves, and `HMAC-SHA256(peer key, label ‖ nonce ‖ fingerprint)`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PinProof {
+    pub fingerprint: String,
+    pub mac: String,
+}
+
+/// A nonce is exactly 32 bytes, hex-encoded.
+pub fn is_valid_nonce(nonce: &str) -> bool {
+    nonce.len() == 64 && nonce.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn pin_proof_hmac(peer_key: &str, nonce: &str, fingerprint: &str) -> hmac::Hmac<Sha256> {
+    use hmac::{KeyInit, Mac};
+    let mut mac = hmac::Hmac::<Sha256>::new_from_slice(peer_key.as_bytes())
+        .expect("HMAC accepts keys of any length");
+    mac.update(PIN_PROOF_LABEL);
+    mac.update(b"\0");
+    mac.update(nonce.to_ascii_lowercase().as_bytes());
+    mac.update(b"\0");
+    mac.update(fingerprint.to_ascii_lowercase().as_bytes());
+    mac
+}
+
+/// Proof MAC a node returns for `nonce` and its own certificate fingerprint.
+pub fn pin_proof_mac(peer_key: &str, nonce: &str, fingerprint: &str) -> String {
+    use hmac::Mac;
+    hex::encode(
+        pin_proof_hmac(peer_key, nonce, fingerprint)
+            .finalize()
+            .into_bytes(),
+    )
+}
+
+/// Checks a peer's proof (constant-time): the MAC must have been made with
+/// `peer_key` over `nonce` and `observed_fingerprint` — the certificate this
+/// client actually saw on the connection, not the one the body claims.
+pub fn verify_pin_proof(
+    peer_key: &str,
+    nonce: &str,
+    observed_fingerprint: &str,
+    proof: &PinProof,
+) -> bool {
+    use hmac::Mac;
+    if !proof.fingerprint.eq_ignore_ascii_case(observed_fingerprint) {
+        return false;
+    }
+    let Ok(mac) = hex::decode(&proof.mac) else {
+        return false;
+    };
+    pin_proof_hmac(peer_key, nonce, observed_fingerprint)
+        .verify_slice(&mac)
+        .is_ok()
+}
+
+/// Fresh random nonce for a proof request (32 bytes, hex).
+pub fn new_nonce() -> Result<String, TlsError> {
+    let mut b = [0u8; 32];
+    getrandom::fill(&mut b)
+        .map_err(|e| TlsError(format!("pin proof: OS CSPRNG unavailable: {e}")))?;
+    Ok(hex::encode(b))
+}
+
+/// First contact with a peer that has no pin yet (#731). Asks the peer at
+/// `base_url` to prove its certificate and returns the fingerprint to pin.
+///
+/// The request carries only a random nonce — never the peer key or any
+/// other credential — so an on-path interceptor learns nothing. The peer
+/// answers `HMAC(peer key, nonce ‖ fingerprint)`; the fingerprint is
+/// checked against the certificate actually seen on this connection, so a
+/// relay presenting its own certificate fails even if it forwards the
+/// real peer's answer. Without a valid proof nothing is pinned: callers
+/// fail closed instead of trusting the first certificate they see.
+pub async fn prove_peer_certificate(
+    base_url: &str,
+    peer_key: &str,
+    label: &str,
+    timeout: Duration,
+) -> Result<String, TlsError> {
+    let nonce = new_nonce()?;
+    let url = format!("{}{PIN_PROOF_PATH}", base_url.trim_end_matches('/'));
+    let resp = client_for(None, label, timeout)?
+        .post(&url)
+        .json(&PinProofRequest {
+            nonce: nonce.clone(),
+        })
+        .send()
+        .await
+        .map_err(|e| TlsError(format!("pin proof: {label}: {e}")))?;
+    let observed = observed_fingerprint(&resp)
+        .ok_or_else(|| TlsError(format!("pin proof: {label} presented no certificate")))?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(TlsError(format!(
+            "pin proof: {label} answered {status} and can't prove its certificate — re-register this node's peer key on it (or update it), or set the pin by hand"
+        )));
+    }
+    let proof: PinProof = resp
+        .json()
+        .await
+        .map_err(|e| TlsError(format!("pin proof: {label}: bad response: {e}")))?;
+    if !verify_pin_proof(peer_key, &nonce, &observed, &proof) {
+        return Err(TlsError(format!(
+            "pin proof: {label} presented certificate {} but did not prove it with the peer key — not pinning",
+            short(&observed)
+        )));
+    }
+    Ok(observed)
 }
 
 /// Verifier that accepts exactly one leaf certificate (by fingerprint) and
@@ -162,9 +291,10 @@ fn provider() -> Arc<rustls::crypto::CryptoProvider> {
 /// Build an HTTPS client for one peer.
 ///
 /// * `pin = Some(fp)` — only that leaf certificate is accepted.
-/// * `pin = None` — first contact: any certificate is accepted **and the
-///   response carries `TlsInfo`** so the caller can record the observed
-///   fingerprint with [`observed_fingerprint`] and pin it from then on.
+/// * `pin = None` — any certificate is accepted and the response carries
+///   `TlsInfo` ([`observed_fingerprint`]). Never send a credential over such
+///   a client: it is for [`prove_peer_certificate`], the CLI's fingerprint
+///   probe (which asks the user to confirm), and the loopback fallback.
 pub fn client_for(
     pin: Option<&str>,
     label: &str,
@@ -207,7 +337,7 @@ pub fn client_builder_for(
         None => {
             debug!(
                 peer = label,
-                "peer_tls: no pin yet — first contact will pin the observed certificate"
+                "peer_tls: unpinned client (certificate proof / fingerprint probe)"
             );
             build(reqwest::Client::builder().danger_accept_invalid_certs(true))
         }
@@ -431,6 +561,133 @@ mod tests {
         let c = client_for(Some(&wrong), "t", Duration::from_secs(5)).unwrap();
         let err = c.get(&url).send().await.expect_err("mismatch must fail");
         assert!(err.is_connect() || err.is_request(), "{err}");
+    }
+
+    #[test]
+    fn pin_proof_round_trip() {
+        let key = "k".repeat(64);
+        let nonce = new_nonce().unwrap();
+        assert!(is_valid_nonce(&nonce));
+        let fp = "ab".repeat(32);
+        let proof = PinProof {
+            fingerprint: fp.clone(),
+            mac: pin_proof_mac(&key, &nonce, &fp),
+        };
+        assert!(verify_pin_proof(&key, &nonce, &fp, &proof));
+        // Fingerprint compare is case-insensitive (pins are stored lowercase).
+        assert!(verify_pin_proof(&key, &nonce, &fp.to_uppercase(), &proof));
+    }
+
+    #[test]
+    fn pin_proof_rejects_wrong_inputs() {
+        let key = "k".repeat(64);
+        let nonce = new_nonce().unwrap();
+        let fp = "ab".repeat(32);
+        let good = PinProof {
+            fingerprint: fp.clone(),
+            mac: pin_proof_mac(&key, &nonce, &fp),
+        };
+        // Wrong key, wrong nonce (replay), garbage MAC.
+        assert!(!verify_pin_proof(&"x".repeat(64), &nonce, &fp, &good));
+        assert!(!verify_pin_proof(&key, &new_nonce().unwrap(), &fp, &good));
+        let garbage = PinProof {
+            mac: "zz".into(),
+            ..good.clone()
+        };
+        assert!(!verify_pin_proof(&key, &nonce, &fp, &garbage));
+        // A relay with its own certificate: the real peer's proof names the
+        // real fingerprint, which doesn't match what the client observed.
+        let relay_fp = "cd".repeat(32);
+        assert!(!verify_pin_proof(&key, &nonce, &relay_fp, &good));
+        // Lying about the fingerprint in the body without the key.
+        let lie = PinProof {
+            fingerprint: relay_fp.clone(),
+            mac: good.mac.clone(),
+        };
+        assert!(!verify_pin_proof(&key, &nonce, &relay_fp, &lie));
+    }
+
+    #[test]
+    fn nonce_shape() {
+        assert!(is_valid_nonce(&"0a".repeat(32)));
+        assert!(!is_valid_nonce(&"0a".repeat(31)));
+        assert!(!is_valid_nonce(&"zz".repeat(32)));
+        assert_ne!(new_nonce().unwrap(), new_nonce().unwrap());
+    }
+
+    /// HTTPS server answering the pin-proof endpoint like a real node:
+    /// proves its certificate with `key` (or, with `key = None`, answers
+    /// 404 like a peer without a stored key / an older version).
+    async fn proof_server(key: Option<String>) -> (u16, String) {
+        use axum::{Json, Router, routing::post};
+        let rk = rcgen::KeyPair::generate().unwrap();
+        let cert = rcgen::CertificateParams::new(vec!["localhost".into()])
+            .unwrap()
+            .self_signed(&rk)
+            .unwrap();
+        let fp = fingerprint_der(cert.der());
+        let cfg = rustls::ServerConfig::builder_with_provider(provider())
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![CertificateDer::from(cert.der().to_vec())],
+                rustls::pki_types::PrivateKeyDer::try_from(rk.serialize_der()).unwrap(),
+            )
+            .unwrap();
+        let served = fp.clone();
+        let app = Router::new().route(
+            PIN_PROOF_PATH,
+            post(move |Json(r): Json<PinProofRequest>| {
+                let key = key.clone();
+                let fp = served.clone();
+                async move {
+                    match key {
+                        Some(k) => Ok(Json(PinProof {
+                            mac: pin_proof_mac(&k, &r.nonce, &fp),
+                            fingerprint: fp,
+                        })),
+                        None => Err(axum::http::StatusCode::NOT_FOUND),
+                    }
+                }
+            }),
+        );
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let tls = axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(cfg));
+        let server = axum_server::tls_rustls::from_tcp_rustls(listener, tls).unwrap();
+        tokio::spawn(async move {
+            let _ = server.serve(app.into_make_service()).await;
+        });
+        (port, fp)
+    }
+
+    #[tokio::test]
+    async fn prove_peer_certificate_pins_only_a_proven_cert() {
+        let key = "k".repeat(64);
+        let (port, fp) = proof_server(Some(key.clone())).await;
+        let base = format!("https://127.0.0.1:{port}");
+        let got = prove_peer_certificate(&base, &key, "t", Duration::from_secs(5))
+            .await
+            .expect("valid proof");
+        assert_eq!(got, fp);
+
+        // Same server, but we hold a different key: an impostor can't prove.
+        let err = prove_peer_certificate(&base, &"x".repeat(64), "t", Duration::from_secs(5))
+            .await
+            .expect_err("wrong key must not pin");
+        assert!(err.0.contains("did not prove"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn prove_peer_certificate_fails_closed_without_proof() {
+        let (port, _fp) = proof_server(None).await;
+        let base = format!("https://127.0.0.1:{port}");
+        let err = prove_peer_certificate(&base, &"k".repeat(64), "t", Duration::from_secs(5))
+            .await
+            .expect_err("no proof must not pin");
+        assert!(err.0.contains("can't prove"), "{err}");
     }
 
     #[test]

@@ -104,7 +104,7 @@ async fn config_converged(engine: &ClusterEngine, loopback_key: Option<&str>) ->
         let Ok(Some(peer_key)) = engine.peer_api_key(peer.id).await else {
             continue;
         };
-        let Ok(client) = engine.peer_client(peer, Duration::from_secs(4)) else {
+        let Ok(client) = engine.peer_client(peer, Duration::from_secs(4)).await else {
             continue;
         };
         let state: PeerState = match client

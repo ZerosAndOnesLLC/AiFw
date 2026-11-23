@@ -212,8 +212,11 @@ async fn push_cert_to_peers(
                 continue;
             }
         };
-        // Pinned to the peer's current certificate (#317).
-        let client = cluster_engine.peer_client(n, std::time::Duration::from_secs(30))?;
+        // Pinned to the peer's proven certificate (#317, #731); never sends
+        // the private key to an unverified peer.
+        let client = cluster_engine
+            .peer_client(n, std::time::Duration::from_secs(30))
+            .await?;
         let url = format!("{}/api/v1/cluster/cert-push", n.api_base());
         let body = serde_json::json!({
             "cert_id": cert_id,

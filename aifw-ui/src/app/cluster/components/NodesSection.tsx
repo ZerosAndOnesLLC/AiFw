@@ -36,13 +36,17 @@ export function NodesSection({
   /// `onDeleted` is invoked only when the delete succeeded (before reload).
   onDelete: (n: Node, onDeleted: () => void) => void;
   onGeneratePeerKey: (nodeId: string, nodeName: string) => void;
-  /// #317: clear the peer's pinned TLS fingerprint so it is re-learned on next contact.
-  onRepin: (nodeId: string) => void;
+  /// #317/#731: without a fingerprint, forget the pin so the peer must prove
+  /// its certificate again; with one, pin it by hand.
+  onRepin: (nodeId: string, fingerprint?: string) => void;
 }) {
   const [showNodeForm, setShowNodeForm] = useState(false);
   const [nodeForm, setNodeForm] = useState<NodeFormState>(defaultNodeForm);
   const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
   const [deleteNodeConfirm, setDeleteNodeConfirm] = useState<Node | null>(null);
+  /// #731: manual pin entry for a peer that can't prove its certificate.
+  const [pinEdit, setPinEdit] = useState<{ id: string; value: string } | null>(null);
+  const pinValid = (v: string) => /^[0-9a-fA-F]{64}$/.test(v.replace(/:/g, "").trim());
 
   const openAddNode = () => {
     setNodeForm(defaultNodeForm);
@@ -196,14 +200,58 @@ export function NodesSection({
                         <button
                           onClick={() => onRepin(n.id)}
                           className="ml-2 text-[var(--accent)] hover:underline"
-                          title="Forget this pin; the next contact re-learns the peer's current certificate"
+                          title="Forget this pin; the peer must prove its current certificate with the peer key again"
                         >
                           Re-pin
                         </button>
                       </span>
+                    ) : pinEdit?.id === n.id ? (
+                      <span className="flex items-center gap-1">
+                        <input
+                          autoFocus
+                          value={pinEdit.value}
+                          onChange={(e) => setPinEdit({ id: n.id, value: e.target.value })}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && pinValid(pinEdit.value)) {
+                              onRepin(n.id, pinEdit.value.trim());
+                              setPinEdit(null);
+                            } else if (e.key === "Escape") {
+                              setPinEdit(null);
+                            }
+                          }}
+                          placeholder="SHA-256 fingerprint (shown on the peer's HA page)"
+                          aria-label={`Certificate fingerprint for ${n.name}`}
+                          className={`${inputCls} font-mono text-xs w-72`}
+                        />
+                        <button
+                          disabled={!pinValid(pinEdit.value)}
+                          onClick={() => {
+                            onRepin(n.id, pinEdit.value.trim());
+                            setPinEdit(null);
+                          }}
+                          className="text-xs text-[var(--accent)] hover:underline disabled:opacity-40 disabled:no-underline"
+                        >
+                          Pin
+                        </button>
+                        <button
+                          onClick={() => setPinEdit(null)}
+                          className="text-xs text-[var(--text-muted)] hover:underline"
+                        >
+                          Cancel
+                        </button>
+                      </span>
                     ) : (
-                      <span className="text-xs text-[var(--text-muted)]" title="Not pinned yet — pinned automatically on the first successful contact">
-                        learn on first contact
+                      <span className="text-xs text-[var(--text-muted)]">
+                        <span title="Not pinned yet. Nothing is sent to this peer until it proves its certificate with the peer key; then it is pinned automatically.">
+                          awaiting proof
+                        </span>
+                        <button
+                          onClick={() => setPinEdit({ id: n.id, value: "" })}
+                          className="ml-2 text-[var(--accent)] hover:underline"
+                          title="Pin the peer's certificate by hand (for a peer that can't prove it, e.g. an older version)"
+                        >
+                          Set pin…
+                        </button>
                       </span>
                     )}
                   </td>
