@@ -63,7 +63,7 @@ axum = { version = "0.8", features = ["ws", "multipart"] }
 # so nothing broader is needed here (SEC-L6 #321).
 tower = { version = "0.5", default-features = false }
 tower-http = { version = "0.7", features = ["cors", "trace", "fs", "set-header", "compression-gzip", "compression-br"] }
-jsonwebtoken = { version = "11", features = ["rust_crypto"] }
+jsonwebtoken = { version = "12", features = ["rust_crypto"] }
 argon2 = "0.6"
 # tokio base carries no runtime features (PERF-H3 #347). Every crate — library
 # and binary alike — opts into exactly the features it uses (no crate uses
@@ -85,7 +85,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 async-trait = "0.1"
 ratatui = "0.30"
 crossterm = "0.29"
-nix = { version = "0.31", features = ["fs", "process", "socket", "net", "fanotify", "feature", "hostname", "user"] }
+nix = { version = "0.32", features = ["fs", "process", "socket", "net", "fanotify", "feature", "hostname", "user"] }
 anyhow = "1"
 sha2 = "0.11"
 hmac = "0.13"

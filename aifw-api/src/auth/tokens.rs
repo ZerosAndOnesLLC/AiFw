@@ -77,7 +77,8 @@ pub fn create_access_token(
     let token = encode(
         &Header::new(Algorithm::HS256),
         &claims,
-        &EncodingKey::from_secret(settings.jwt_secret.as_bytes()),
+        &EncodingKey::from_secret(settings.jwt_secret.as_bytes())
+            .map_err(|e| format!("token signing key error: {e}"))?,
     )
     .map_err(|e| format!("token encode error: {e}"))?;
 
@@ -98,12 +99,10 @@ pub fn verify_access_token(
     token: &str,
     settings: &AuthSettings,
 ) -> Result<TokenData<Claims>, String> {
-    decode::<Claims>(
-        token,
-        &DecodingKey::from_secret(settings.jwt_secret.as_bytes()),
-        &access_token_validation(),
-    )
-    .map_err(|e| format!("token verify error: {e}"))
+    let key = DecodingKey::from_secret(settings.jwt_secret.as_bytes())
+        .map_err(|e| format!("token verification key error: {e}"))?;
+    decode::<Claims>(token, &key, &access_token_validation())
+        .map_err(|e| format!("token verify error: {e}"))
 }
 
 // ============================================================
@@ -454,7 +453,7 @@ mod tests {
             perm: None,
             role: None,
         };
-        let key = EncodingKey::from_secret(s.jwt_secret.as_bytes());
+        let key = EncodingKey::from_secret(s.jwt_secret.as_bytes()).unwrap();
         let legacy = encode(&Header::new(Algorithm::HS256), &claims, &key).unwrap();
         assert!(
             verify_access_token(&legacy, &s).is_err(),
@@ -495,7 +494,7 @@ mod tests {
             perm: None,
             role: None,
         };
-        let key = EncodingKey::from_secret(s.jwt_secret.as_bytes());
+        let key = EncodingKey::from_secret(s.jwt_secret.as_bytes()).unwrap();
         let hs512 = encode(&Header::new(Algorithm::HS512), &claims, &key).unwrap();
         assert!(verify_access_token(&hs512, &s).is_err());
     }
